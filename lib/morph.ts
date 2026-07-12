@@ -23,47 +23,25 @@ export type MorphResult = {
 export const PRESETS: MorphPreset[] = [
   {
     id: "harmony",
-    label: "Natural harmony",
-    description: "Balanced proportions with the lightest touch.",
-    jaw: 0.3,
-    chin: 0.2,
-    nose: 0.25,
-    lips: 0.15,
-    brows: 0.18,
-    symmetry: 0.3,
+    label: "Harmony",
+    description: "Balances paired features and gently refines proportions.",
+    jaw: 0.18,
+    chin: 0.16,
+    nose: 0.32,
+    lips: 0.22,
+    brows: 0.2,
+    symmetry: 0.62,
   },
   {
-    id: "chadlite",
-    label: "Chadlite",
-    description: "A squarer jaw, firmer chin and straighter brow line.",
-    jaw: 0.95,
-    chin: 0.7,
-    nose: 0.25,
-    lips: 0.05,
-    brows: 0.45,
-    symmetry: 0.3,
-  },
-  {
-    id: "refined",
-    label: "Refined",
-    description: "Softer taper, subtle lip balance and a narrower nose.",
-    jaw: -0.38,
-    chin: 0.28,
-    nose: 0.65,
-    lips: 0.5,
-    brows: 0.36,
-    symmetry: 0.42,
-  },
-  {
-    id: "symmetry",
-    label: "Symmetry",
-    description: "Gently evens paired features without changing character.",
-    jaw: 0,
-    chin: 0,
-    nose: 0.1,
-    lips: 0.08,
-    brows: 0.08,
-    symmetry: 0.88,
+    id: "angularity",
+    label: "Angularity",
+    description: "Adds visible definition through the jaw, chin and brows.",
+    jaw: 1,
+    chin: 0.82,
+    nose: 0.16,
+    lips: 0,
+    brows: 0.52,
+    symmetry: 0.24,
   },
 ];
 
@@ -79,20 +57,6 @@ export function getPreset(id: string) {
   return PRESETS.find((preset) => preset.id === id) ?? PRESETS[0];
 }
 
-export function presetFromPrompt(prompt: string): MorphPreset {
-  const text = prompt.toLowerCase();
-  if (/chad|masculine|square|strong jaw|model man/.test(text)) {
-    return getPreset("chadlite");
-  }
-  if (/pretty|prettier|refin|feminine|soft|delicate|slim/.test(text)) {
-    return getPreset("refined");
-  }
-  if (/symmetr|even|balanced sides/.test(text)) {
-    return getPreset("symmetry");
-  }
-  return getPreset("harmony");
-}
-
 export async function createFaceLandmarker(): Promise<FaceLandmarker> {
   if (!landmarkerPromise) {
     landmarkerPromise = (async () => {
@@ -100,7 +64,7 @@ export async function createFaceLandmarker(): Promise<FaceLandmarker> {
         "@mediapipe/tasks-vision"
       );
       const vision = await FilesetResolver.forVisionTasks(
-        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm"
+        "/mediapipe/wasm"
       );
       const common = {
         baseOptions: {
@@ -108,11 +72,11 @@ export async function createFaceLandmarker(): Promise<FaceLandmarker> {
         },
         runningMode: "IMAGE" as const,
         numFaces: 1,
-        minFaceDetectionConfidence: 0.55,
-        minFacePresenceConfidence: 0.55,
-        minTrackingConfidence: 0.55,
+        minFaceDetectionConfidence: 0.4,
+        minFacePresenceConfidence: 0.4,
+        minTrackingConfidence: 0.4,
         outputFaceBlendshapes: false,
-        outputFacialTransformationMatrixes: true,
+        outputFacialTransformationMatrixes: false,
       };
       try {
         return await FaceLandmarker.createFromOptions(vision, {
@@ -122,7 +86,10 @@ export async function createFaceLandmarker(): Promise<FaceLandmarker> {
       } catch {
         return FaceLandmarker.createFromOptions(vision, common);
       }
-    })();
+    })().catch((error) => {
+      landmarkerPromise = null;
+      throw error;
+    });
   }
   return landmarkerPromise;
 }
@@ -166,7 +133,7 @@ function buildControls(
   });
   const faceWidth = Math.abs(p(454).x - p(234).x);
   const faceHeight = Math.abs(p(152).y - p(10).y);
-  const scale = Math.min(faceWidth, faceHeight) * 0.022 * strength;
+  const scale = Math.min(faceWidth, faceHeight) * 0.052 * strength;
   const add = (
     index: number,
     dx: number,
@@ -312,7 +279,7 @@ export function morphImage(
   const radiusX = (maxX - minX) * 0.59;
   const radiusY = (maxY - minY) * 0.57;
 
-  const columns = 34;
+  const columns = 52;
   const rows = Math.max(24, Math.round(columns * (height / width)));
   const sourcePoints: Point[][] = [];
   const targetPoints: Point[][] = [];
@@ -336,11 +303,13 @@ export function morphImage(
         dx += control.dx * weight;
         dy += control.dy * weight;
       }
-      const normalized = sum > 0 ? Math.min(1, sum) / Math.max(1, sum * 0.72) : 0;
+      const influence = Math.min(1, sum);
+      const averagedDx = sum > 0 ? dx / sum : 0;
+      const averagedDy = sum > 0 ? dy / sum : 0;
       sourceRow.push(source);
       targetRow.push({
-        x: source.x + dx * normalized * faceMask,
-        y: source.y + dy * normalized * faceMask,
+        x: source.x + averagedDx * influence * faceMask,
+        y: source.y + averagedDy * influence * faceMask,
       });
     }
     sourcePoints.push(sourceRow);

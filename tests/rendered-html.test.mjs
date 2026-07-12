@@ -20,8 +20,9 @@ test("renders the complete Harmonia studio", async () => {
   const html = await response.text();
   assert.match(html, /<title>Harmonia — Pixel-only portrait morphing<\/title>/i);
   assert.match(html, /Drop in a portrait/);
-  assert.match(html, /Natural harmony/);
-  assert.match(html, /Chadlite/);
+  assert.match(html, /Harmony/);
+  assert.match(html, /Angularity/);
+  assert.doesNotMatch(html, /Chadlite|Refined|Symmetry/);
   assert.match(html, /Export PNG/);
   assert.match(html, /Never uploaded/);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton/i);
@@ -32,8 +33,13 @@ test("ships the local landmark model and pixel warp engine", async () => {
     readFile(new URL("../lib/morph.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     access(new URL("../public/models/face_landmarker.task", import.meta.url)),
+    access(new URL("../public/mediapipe/wasm/vision_wasm_internal.wasm", import.meta.url)),
   ]);
   assert.match(engine, /FaceLandmarker/);
+  assert.match(engine, /FilesetResolver\.forVisionTasks\(\s*"\/mediapipe\/wasm"/);
+  assert.match(engine, /id: "harmony"/);
+  assert.match(engine, /id: "angularity"/);
+  assert.doesNotMatch(engine, /id: "chadlite"|id: "refined"|id: "symmetry"/);
   assert.match(engine, /drawTriangle/);
   assert.match(engine, /faceMask/);
   assert.match(page, /morphImage/);

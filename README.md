@@ -9,8 +9,8 @@ hair, shadows, color, or background content.
 
 - local JPG, PNG, and WebP upload up to 20 MB
 - one-face landmark detection with frontal, three-quarter, and profile support
-- Natural Harmony, Chadlite, Refined, and Symmetry morph plans
-- text prompt routing, strength control, before/after preview, and face map
+- Harmony and Angularity morph plans
+- strength control, before/after preview, and face map
 - PNG export without the diagnostic overlay
 - no image upload API, persistence, analytics, or authentication
 
@@ -32,6 +32,5 @@ npm run lint
 npm test
 ```
 
-The face landmark model is included under `public/models`. MediaPipe's WebAssembly
-runtime is loaded from jsDelivr on first use; portrait pixels remain in the
-browser and are never sent with that request.
+The face landmark model and MediaPipe WebAssembly runtime are both bundled under
+`public/`, so the full photo pipeline runs locally in the browser without a CDN.

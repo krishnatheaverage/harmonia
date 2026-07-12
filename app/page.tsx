@@ -7,7 +7,6 @@ import {
   getPreset,
   morphImage,
   PRESETS,
-  presetFromPrompt,
   type Point,
 } from "../lib/morph";
 
@@ -44,8 +43,7 @@ export default function Home() {
   const [error, setError] = useState("");
   const [fileName, setFileName] = useState("");
   const [presetId, setPresetId] = useState("harmony");
-  const [strength, setStrength] = useState(46);
-  const [prompt, setPrompt] = useState("Make me naturally more harmonious");
+  const [strength, setStrength] = useState(55);
   const [showOriginal, setShowOriginal] = useState(false);
   const [showMesh, setShowMesh] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -129,12 +127,6 @@ export default function Home() {
     void processFile(event.dataTransfer.files?.[0]);
   };
 
-  const applyPrompt = () => {
-    const nextPreset = presetFromPrompt(prompt);
-    setPresetId(nextPreset.id);
-    if (status === "empty" || status === "error") fileInputRef.current?.click();
-  };
-
   const download = () => {
     const source = sourceRef.current;
     const landmarks = landmarksRef.current;
@@ -171,8 +163,8 @@ export default function Home() {
 
       <section className="hero" id="top">
         <div className="eyebrow"><span>PIXEL-ONLY MORPHING</span><span className="eyebrow-line" /></div>
-        <h1>Your face.<br /><em>Better aligned.</em></h1>
-        <p className="hero-copy">Conservative facial reshaping that keeps your identity, texture, lighting and background exactly where they belong.</p>
+        <h1>Harmony or<br /><em>angularity.</em></h1>
+        <p className="hero-copy">Two focused edits. One balances facial relationships; the other adds definition. Both reshape only your original pixels.</p>
       </section>
 
       <section className={`studio ${status === "ready" ? "studio-active" : ""}`} aria-label="Portrait editor">
@@ -217,19 +209,10 @@ export default function Home() {
 
         <aside className="control-panel">
           <div className="panel-heading">
-            <div><span className="step-number">01</span><h2>Direct the edit</h2></div>
+            <div><span className="step-number">01</span><h2>Choose the edit</h2></div>
             {status === "ready" && <span className="ready-badge">Face mapped</span>}
           </div>
-
-          <label className="prompt-label" htmlFor="edit-prompt">Describe the look</label>
-          <div className="prompt-box">
-            <textarea id="edit-prompt" value={prompt} onChange={(event) => setPrompt(event.target.value)} maxLength={140} rows={3} />
-            <button onClick={applyPrompt} aria-label="Apply prompt">↗</button>
-          </div>
-          <p className="prompt-hint">Try “make me Chadlite,” “refine my features,” or “improve symmetry.”</p>
-
-          <div className="divider" />
-          <div className="section-label"><span className="step-number">02</span><h3>Choose a direction</h3></div>
+          <p className="mode-intro">Select a single morph plan. You can switch modes instantly after your face is mapped.</p>
           <div className="preset-grid">
             {PRESETS.map((option) => (
               <button
@@ -247,7 +230,7 @@ export default function Home() {
 
           <div className="divider" />
           <div className="strength-row">
-            <div><span className="step-number">03</span><h3>Edit strength</h3></div>
+            <div><span className="step-number">02</span><h3>Edit strength</h3></div>
             <output>{strength}%</output>
           </div>
           <input className="range" style={{ "--range": `${strength}%` } as CSSProperties} type="range" min="0" max="100" value={strength} onChange={(event) => setStrength(Number(event.target.value))} aria-label="Edit strength" />
@@ -255,7 +238,7 @@ export default function Home() {
 
           {status === "ready" && (
             <div className="safety-card">
-              <div><span className="safety-icon">◇</span><strong>Conservative pass</strong><small>{regions.join(" · ")}</small></div>
+              <div><span className="safety-icon">◇</span><strong>{getPreset(presetId).label} applied</strong><small>{regions.join(" · ")}</small></div>
               <span>{movement.toFixed(1)} px max</span>
             </div>
           )}
