@@ -20,6 +20,18 @@ export type MorphResult = {
   maxMovementPx: number;
 };
 
+export type FaceAnalysis = {
+  harmony: number;
+  symmetry: number;
+  structure: number;
+  metrics: {
+    jawToFace: number;
+    noseToFace: number;
+    mouthToFace: number;
+    lowerThird: number;
+  };
+};
+
 export const PRESETS: MorphPreset[] = [
   {
     id: "harmony",
@@ -33,9 +45,20 @@ export const PRESETS: MorphPreset[] = [
     symmetry: 0.62,
   },
   {
-    id: "angularity",
-    label: "Angularity",
-    description: "Adds visible definition through the jaw, chin and brows.",
+    id: "symmetry",
+    label: "Symmetry",
+    description: "Evens paired landmarks while preserving natural asymmetry.",
+    jaw: 0,
+    chin: 0,
+    nose: 0,
+    lips: 0,
+    brows: 0,
+    symmetry: 0.94,
+  },
+  {
+    id: "dimorphism",
+    label: "Dimorphism",
+    description: "Enhances your existing structural direction—without guessing gender.",
     jaw: 1,
     chin: 0.82,
     nose: 0.16,
@@ -94,7 +117,7 @@ export async function createFaceLandmarker(): Promise<FaceLandmarker> {
   return landmarkerPromise;
 }
 
-export async function detectLandmarks(image: HTMLImageElement | HTMLCanvasElement): Promise<Point[]> {
+export async function detectLandmarks(image: HTMLImageElement | HTMLCanvasElement | HTMLVideoElement): Promise<Point[]> {
   const landmarker = await createFaceLandmarker();
   const result = landmarker.detect(image);
   const face = result.faceLandmarks?.[0];
@@ -119,6 +142,39 @@ const SYMMETRY_PAIRS = [
   pair(136, 365),
 ];
 
+const clamp = (value: number, min: number, max: number) =>
+  Math.max(min, Math.min(max, value));
+
+export function analyzeFace(points: Point[]): FaceAnalysis {
+  const distance = (a: number, b: number) =>
+    Math.hypot(points[a].x - points[b].x, points[a].y - points[b].y);
+  const faceWidth = Math.max(distance(234, 454), 0.001);
+  const faceHeight = Math.max(distance(10, 152), 0.001);
+  const jawToFace = distance(172, 397) / faceWidth;
+  const noseToFace = distance(49, 279) / faceWidth;
+  const mouthToFace = distance(61, 291) / faceWidth;
+  const lowerThird = distance(2, 152) / faceHeight;
+  const closeness = (value: number, target: number, tolerance: number) =>
+    clamp(1 - Math.abs(value - target) / tolerance, 0, 1);
+  const balance =
+    (closeness(jawToFace, 0.68, 0.22) +
+      closeness(noseToFace, 0.27, 0.13) +
+      closeness(mouthToFace, 0.39, 0.16) +
+      closeness(lowerThird, 0.36, 0.16)) /
+    4;
+  const symmetryError =
+    SYMMETRY_PAIRS.reduce((total, [left, right]) => {
+      return total + Math.abs(points[left].y - points[right].y) / faceHeight;
+    }, 0) / SYMMETRY_PAIRS.length;
+  const structuralContrast = clamp(Math.abs(jawToFace - 0.62) / 0.22, 0, 1);
+  return {
+    harmony: Math.round(55 + balance * 40),
+    symmetry: Math.round(clamp(98 - symmetryError * 420, 50, 98)),
+    structure: Math.round(55 + structuralContrast * 40),
+    metrics: { jawToFace, noseToFace, mouthToFace, lowerThird },
+  };
+}
+
 function buildControls(
   points: Point[],
   width: number,
@@ -134,6 +190,27 @@ function buildControls(
   const faceWidth = Math.abs(p(454).x - p(234).x);
   const faceHeight = Math.abs(p(152).y - p(10).y);
   const scale = Math.min(faceWidth, faceHeight) * 0.052 * strength;
+  const analysis = analyzeFace(points);
+  let jawFactor = preset.jaw;
+  let chinFactor = preset.chin;
+  let noseFactor = preset.nose;
+  let lipFactor = preset.lips;
+  let browFactor = preset.brows;
+  if (preset.id === "harmony") {
+    jawFactor = clamp((0.68 - analysis.metrics.jawToFace) * 3.4, -0.55, 0.58);
+    chinFactor = clamp((analysis.metrics.lowerThird - 0.36) * 2.8, -0.28, 0.55);
+    noseFactor = clamp((analysis.metrics.noseToFace - 0.27) * 4.5, -0.28, 0.72);
+    lipFactor = clamp((0.39 - analysis.metrics.mouthToFace) * 3.8, -0.32, 0.62);
+    browFactor = 0.2;
+  } else if (preset.id === "dimorphism") {
+    // Enhance the geometry already present; this is structural and does not infer identity.
+    const angularDirection = analysis.metrics.jawToFace >= 0.64 ? 1 : -0.62;
+    jawFactor = angularDirection;
+    chinFactor = angularDirection > 0 ? 0.82 : 0.34;
+    noseFactor = angularDirection > 0 ? 0.12 : 0.48;
+    lipFactor = angularDirection > 0 ? 0.02 : 0.42;
+    browFactor = angularDirection > 0 ? 0.52 : 0.3;
+  }
   const add = (
     index: number,
     dx: number,
@@ -143,7 +220,7 @@ function buildControls(
   ) => controls.push({ source: p(index), dx, dy, radius, region });
 
   // A positive jaw value creates a firmer lower third. A negative value tapers it.
-  const jaw = preset.jaw * scale;
+  const jaw = jawFactor * scale;
   [234, 172, 136, 150].forEach((index, order) =>
     add(index, -jaw * (0.45 + order * 0.15), -Math.abs(jaw) * 0.08, faceWidth * 0.16, "Jaw"),
   );
@@ -151,23 +228,23 @@ function buildControls(
     add(index, jaw * (0.45 + order * 0.15), -Math.abs(jaw) * 0.08, faceWidth * 0.16, "Jaw"),
   );
 
-  const chin = preset.chin * scale;
+  const chin = chinFactor * scale;
   add(152, 0, -chin * 0.65, faceWidth * 0.18, "Chin");
   add(148, -chin * 0.16, -chin * 0.32, faceWidth * 0.14, "Chin");
   add(377, chin * 0.16, -chin * 0.32, faceWidth * 0.14, "Chin");
 
-  const nose = preset.nose * scale;
+  const nose = noseFactor * scale;
   add(49, nose * 0.48, 0, faceWidth * 0.1, "Nose");
   add(279, -nose * 0.48, 0, faceWidth * 0.1, "Nose");
   add(1, 0, -nose * 0.1, faceWidth * 0.09, "Nose");
 
-  const lips = preset.lips * scale;
+  const lips = lipFactor * scale;
   add(61, -lips * 0.28, 0, faceWidth * 0.1, "Lips");
   add(291, lips * 0.28, 0, faceWidth * 0.1, "Lips");
   add(13, 0, -lips * 0.14, faceWidth * 0.08, "Lips");
   add(14, 0, lips * 0.12, faceWidth * 0.08, "Lips");
 
-  const brow = preset.brows * scale;
+  const brow = browFactor * scale;
   add(70, 0, -brow * 0.36, faceWidth * 0.11, "Brows");
   add(300, 0, -brow * 0.36, faceWidth * 0.11, "Brows");
   add(105, 0, -brow * 0.2, faceWidth * 0.1, "Brows");

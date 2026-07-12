@@ -8,8 +8,10 @@ hair, shadows, color, or background content.
 ## Included
 
 - local JPG, PNG, and WebP upload up to 20 MB
+- camera-first automatic face scan and capture (with explicit browser permission)
 - one-face landmark detection with frontal, three-quarter, and profile support
-- Harmony and Angularity morph plans
+- adaptive Facial Harmony, Symmetry, and Dimorphism morph plans
+- landmark-ratio blueprint comparison for jaw, nose, mouth, and lower-third geometry
 - strength control, before/after preview, and face map
 - PNG export without the diagnostic overlay
 - no image upload API, persistence, analytics, or authentication
@@ -33,4 +35,4 @@ npm test
 ```
 
 The face landmark model and MediaPipe WebAssembly runtime are both bundled under
-`public/`, so the full photo pipeline runs locally in the browser without a CDN.
+`public/`, so camera frames and photos remain in the browser without a CDN.

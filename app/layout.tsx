@@ -3,7 +3,7 @@ import { headers } from "next/headers";
 import "./globals.css";
 
 const title = "Harmonia — Pixel-only portrait morphing";
-const description = "Private, conservative facial reshaping that preserves your original pixels, identity, texture, lighting and background.";
+const description = "Camera-first facial scanning and adaptive pixel-only morphing for harmony, symmetry and dimorphism.";
 
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();

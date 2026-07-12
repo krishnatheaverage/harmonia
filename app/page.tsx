@@ -2,15 +2,17 @@
 
 import { ChangeEvent, CSSProperties, DragEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
+  analyzeFace,
   detectLandmarks,
   drawLandmarkOverlay,
   getPreset,
   morphImage,
   PRESETS,
+  type FaceAnalysis,
   type Point,
 } from "../lib/morph";
 
-type Status = "empty" | "loading" | "ready" | "error";
+type Status = "empty" | "camera" | "loading" | "ready" | "error";
 
 function loadImage(file: File): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
@@ -36,9 +38,12 @@ function fitDimensions(width: number, height: number, maxSide = 1800) {
 export default function Home() {
   const originalRef = useRef<HTMLCanvasElement>(null);
   const resultRef = useRef<HTMLCanvasElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const sourceRef = useRef<HTMLCanvasElement | null>(null);
   const landmarksRef = useRef<Point[] | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const scanRunRef = useRef(0);
   const [status, setStatus] = useState<Status>("empty");
   const [error, setError] = useState("");
   const [fileName, setFileName] = useState("");
@@ -49,6 +54,18 @@ export default function Home() {
   const [dragging, setDragging] = useState(false);
   const [regions, setRegions] = useState<string[]>([]);
   const [movement, setMovement] = useState(0);
+  const [analysis, setAnalysis] = useState<FaceAnalysis | null>(null);
+  const [scanProgress, setScanProgress] = useState(0);
+
+  const stopCamera = useCallback(() => {
+    scanRunRef.current += 1;
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    if (videoRef.current) videoRef.current.srcObject = null;
+  }, []);
+
+  useEffect(() => () => stopCamera(), [stopCamera]);
+
   const paint = useCallback(() => {
     const source = sourceRef.current;
     const landmarks = landmarksRef.current;
@@ -79,6 +96,7 @@ export default function Home() {
 
   const processFile = async (file?: File) => {
     if (!file) return;
+    stopCamera();
     if (!file.type.startsWith("image/")) {
       setError("Choose a JPG, PNG, or WebP portrait.");
       setStatus("error");
@@ -107,6 +125,7 @@ export default function Home() {
       const landmarks = await detectLandmarks(source);
       sourceRef.current = source;
       landmarksRef.current = landmarks;
+      setAnalysis(analyzeFace(landmarks));
       setStatus("ready");
       window.setTimeout(paint, 0);
     } catch (cause) {
@@ -127,6 +146,86 @@ export default function Home() {
     void processFile(event.dataTransfer.files?.[0]);
   };
 
+  const startCamera = async () => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setError("Camera scanning is not supported in this browser. Choose a photo instead.");
+      setStatus("error");
+      return;
+    }
+    setError("");
+    setScanProgress(8);
+    setStatus("camera");
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 1280 } },
+      });
+      streamRef.current = stream;
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      const video = videoRef.current;
+      if (!video) throw new Error("The camera preview could not start.");
+      video.srcObject = stream;
+      await video.play();
+      const run = ++scanRunRef.current;
+      let stableFrames = 0;
+      setScanProgress(20);
+
+      const scan = async () => {
+        if (run !== scanRunRef.current || !streamRef.current) return;
+        try {
+          const landmarks = await detectLandmarks(video);
+          const faceWidth = Math.abs(landmarks[454].x - landmarks[234].x);
+          const centerX = (landmarks[1].x + landmarks[152].x) / 2;
+          const centerY = (landmarks[10].y + landmarks[152].y) / 2;
+          const wellFramed =
+            faceWidth > 0.24 && centerX > 0.28 && centerX < 0.72 && centerY > 0.3 && centerY < 0.72;
+          stableFrames = wellFramed ? stableFrames + 1 : 0;
+          setScanProgress(wellFramed ? 42 + stableFrames * 19 : 32);
+
+          if (stableFrames >= 3) {
+            const dimensions = fitDimensions(video.videoWidth, video.videoHeight, 1600);
+            const source = document.createElement("canvas");
+            source.width = dimensions.width;
+            source.height = dimensions.height;
+            const context = source.getContext("2d", { alpha: false });
+            if (!context) throw new Error("Canvas is unavailable in this browser.");
+            context.translate(source.width, 0);
+            context.scale(-1, 1);
+            context.drawImage(video, 0, 0, source.width, source.height);
+            const mirrored = landmarks.map((point) => ({ ...point, x: 1 - point.x }));
+            sourceRef.current = source;
+            landmarksRef.current = mirrored;
+            setAnalysis(analyzeFace(mirrored));
+            setFileName("camera-scan.jpg");
+            setShowOriginal(false);
+            setScanProgress(100);
+            stopCamera();
+            setStatus("ready");
+            window.setTimeout(paint, 0);
+            return;
+          }
+        } catch (cause) {
+          const message = cause instanceof Error ? cause.message : "";
+          if (!message.includes("clear face")) {
+            stopCamera();
+            setError("The face scanner could not start. Refresh the page or choose a photo.");
+            setStatus("error");
+            return;
+          }
+          stableFrames = 0;
+          setScanProgress(24);
+        }
+        window.setTimeout(scan, 240);
+      };
+      void scan();
+    } catch (cause) {
+      stopCamera();
+      const denied = cause instanceof DOMException && (cause.name === "NotAllowedError" || cause.name === "SecurityError");
+      setError(denied ? "Camera access was blocked. Allow camera access or choose a photo." : "The camera could not start. Choose a photo instead.");
+      setStatus("error");
+    }
+  };
+
   const download = () => {
     const source = sourceRef.current;
     const landmarks = landmarksRef.current;
@@ -143,6 +242,9 @@ export default function Home() {
     setStatus("empty");
     setError("");
     setFileName("");
+    setAnalysis(null);
+    setScanProgress(0);
+    stopCamera();
     sourceRef.current = null;
     landmarksRef.current = null;
   };
@@ -163,13 +265,24 @@ export default function Home() {
 
       <section className="hero" id="top">
         <div className="eyebrow"><span>PIXEL-ONLY MORPHING</span><span className="eyebrow-line" /></div>
-        <h1>Harmony or<br /><em>angularity.</em></h1>
-        <p className="hero-copy">Two focused edits. One balances facial relationships; the other adds definition. Both reshape only your original pixels.</p>
+        <h1>Scan. Measure.<br /><em>Harmonize.</em></h1>
+        <p className="hero-copy">Your face is mapped against a reference blueprint for harmony, symmetry and dimorphism—then reshaped using only your original pixels.</p>
       </section>
 
       <section className={`studio ${status === "ready" ? "studio-active" : ""}`} aria-label="Portrait editor">
         <div className="editor-stage">
-          {status === "empty" || status === "error" ? (
+          {status === "camera" ? (
+            <div className="camera-stage">
+              <video ref={videoRef} className="camera-video" muted playsInline aria-label="Live camera face scan" />
+              <div className="camera-frame" aria-hidden="true"><span /><span /><span /><span /></div>
+              <div className="camera-status">
+                <strong>{scanProgress < 25 ? "Starting private scanner" : scanProgress < 42 ? "Center your face" : "Hold still—face found"}</strong>
+                <div className="scan-meter"><i style={{ width: `${scanProgress}%` }} /></div>
+                <small>Capture happens automatically when your face is centered.</small>
+              </div>
+              <button className="camera-cancel" onClick={() => { stopCamera(); setStatus("empty"); }}>Cancel</button>
+            </div>
+          ) : status === "empty" || status === "error" ? (
             <div
               className={`dropzone ${dragging ? "is-dragging" : ""}`}
               onDragEnter={() => setDragging(true)}
@@ -182,11 +295,12 @@ export default function Home() {
                 <span className="guide-corner bl" /><span className="guide-corner br" />
                 <div className="guide-face"><i className="guide-eye left" /><i className="guide-eye right" /><i className="guide-nose" /><i className="guide-mouth" /></div>
               </div>
-              <h2>{status === "error" ? "Try another portrait" : "Drop in a portrait"}</h2>
-              <p>{error || "Frontal, three-quarter and clean profile photos work best."}</p>
-              <button className="primary-button" onClick={() => fileInputRef.current?.click()}>
-                <span aria-hidden="true">＋</span> Choose photo
-              </button>
+              <h2>{status === "error" ? "Try again" : "Scan your face"}</h2>
+              <p>{error || "The camera maps and captures your face automatically. No upload required."}</p>
+              <div className="capture-actions">
+                <button className="primary-button" onClick={() => void startCamera()}><span aria-hidden="true">◎</span> Start camera</button>
+                <button className="secondary-button" onClick={() => fileInputRef.current?.click()}>Choose photo instead</button>
+              </div>
               <small>JPG, PNG or WEBP · Up to 20 MB · Never uploaded</small>
             </div>
           ) : (
@@ -209,10 +323,10 @@ export default function Home() {
 
         <aside className="control-panel">
           <div className="panel-heading">
-            <div><span className="step-number">01</span><h2>Choose the edit</h2></div>
+            <div><span className="step-number">01</span><h2>Choose a direction</h2></div>
             {status === "ready" && <span className="ready-badge">Face mapped</span>}
           </div>
-          <p className="mode-intro">Select a single morph plan. You can switch modes instantly after your face is mapped.</p>
+          <p className="mode-intro">Each direction uses your own measurements to create an adaptive morph plan.</p>
           <div className="preset-grid">
             {PRESETS.map((option) => (
               <button
@@ -240,6 +354,19 @@ export default function Home() {
             <div className="safety-card">
               <div><span className="safety-icon">◇</span><strong>{getPreset(presetId).label} applied</strong><small>{regions.join(" · ")}</small></div>
               <span>{movement.toFixed(1)} px max</span>
+            </div>
+          )}
+
+          {status === "ready" && analysis && (
+            <div className="blueprint-card">
+              <div className="blueprint-heading"><strong>Blueprint comparison</strong><small>geometry, not a beauty score</small></div>
+              {[
+                ["Harmony", analysis.harmony],
+                ["Symmetry", analysis.symmetry],
+                ["Structure", analysis.structure],
+              ].map(([label, value]) => (
+                <div className="metric-row" key={String(label)}><span>{label}</span><i><b style={{ width: `${value}%` }} /></i><output>{value}</output></div>
+              ))}
             </div>
           )}
 
