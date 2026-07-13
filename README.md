@@ -1,5 +1,7 @@
 # Harmonia V1
 
+Public app: https://krishnatheaverage.github.io/harmonia/
+
 Harmonia is a private, browser-based portrait reshaping studio. It detects a
 single face with MediaPipe landmarks and uses a bounded triangular deformation
 mesh to move only pixels from the source image. It does not generate skin,
@@ -32,6 +34,7 @@ Then open `http://localhost:3000`.
 ```bash
 npm run lint
 npm test
+npm run build:pages
 ```
 
 The face landmark model and MediaPipe WebAssembly runtime are both bundled under

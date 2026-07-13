@@ -76,6 +76,12 @@ const FACE_OVAL = [
 
 let landmarkerPromise: Promise<FaceLandmarker> | null = null;
 
+const publicAsset = (path: string) => {
+  const base =
+    (import.meta as ImportMeta & { env?: { BASE_URL?: string } }).env?.BASE_URL ?? "/";
+  return `${base.endsWith("/") ? base : `${base}/`}${path.replace(/^\//, "")}`;
+};
+
 export function getPreset(id: string) {
   return PRESETS.find((preset) => preset.id === id) ?? PRESETS[0];
 }
@@ -87,11 +93,11 @@ export async function createFaceLandmarker(): Promise<FaceLandmarker> {
         "@mediapipe/tasks-vision"
       );
       const vision = await FilesetResolver.forVisionTasks(
-        "/mediapipe/wasm"
+        publicAsset("mediapipe/wasm")
       );
       const common = {
         baseOptions: {
-          modelAssetPath: "/models/face_landmarker.task",
+          modelAssetPath: publicAsset("models/face_landmarker.task"),
         },
         runningMode: "IMAGE" as const,
         numFaces: 1,

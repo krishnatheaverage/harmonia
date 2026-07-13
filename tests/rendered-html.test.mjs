@@ -38,7 +38,7 @@ test("ships the local landmark model and pixel warp engine", async () => {
     access(new URL("../public/mediapipe/wasm/vision_wasm_internal.wasm", import.meta.url)),
   ]);
   assert.match(engine, /FaceLandmarker/);
-  assert.match(engine, /FilesetResolver\.forVisionTasks\(\s*"\/mediapipe\/wasm"/);
+  assert.match(engine, /FilesetResolver\.forVisionTasks\(\s*publicAsset\("mediapipe\/wasm"\)/);
   assert.match(engine, /id: "harmony"/);
   assert.match(engine, /id: "symmetry"/);
   assert.match(engine, /id: "dimorphism"/);
