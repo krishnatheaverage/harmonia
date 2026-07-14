@@ -1,19 +1,29 @@
 import type { FaceLandmarker } from "@mediapipe/tasks-vision";
+import {
+  DEFAULT_DIRECTION_MIX,
+  MEASUREMENT_CATALOG,
+  SEMANTIC_LANDMARK_COUNT,
+  SEMANTIC_LANDMARKS,
+  analyzeFace,
+  createMorphPlan,
+  semanticOverlayIndices,
+  type DirectionMix,
+  type FaceAnalysis,
+  type FaceObservation,
+  type MorphPlan,
+  type Point,
+} from "./face-intelligence";
 
-export type Point = { x: number; y: number; z?: number };
-type Triangle = [number, number, number];
-
-export type MorphPreset = {
-  id: string;
-  label: string;
-  description: string;
-  jaw: number;
-  chin: number;
-  nose: number;
-  lips: number;
-  brows: number;
-  symmetry: number;
+export {
+  DEFAULT_DIRECTION_MIX,
+  MEASUREMENT_CATALOG,
+  SEMANTIC_LANDMARK_COUNT,
+  SEMANTIC_LANDMARKS,
+  analyzeFace,
+  createMorphPlan,
 };
+export type { DirectionMix, FaceAnalysis, FaceObservation, MorphPlan, Point };
+type Triangle = [number, number, number];
 
 export type MorphResult = {
   canvas: HTMLCanvasElement;
@@ -21,53 +31,8 @@ export type MorphResult = {
   maxMovementPx: number;
   safetyScale: number;
   safetyStatus: "passed" | "weakened" | "identity";
+  plan: MorphPlan;
 };
-
-export type FaceAnalysis = {
-  metrics: {
-    jawToFace: number;
-    noseToFace: number;
-    mouthToFace: number;
-    lowerThird: number;
-    pairedDeviation: number;
-  };
-};
-
-export const PRESETS: MorphPreset[] = [
-  {
-    id: "harmony",
-    label: "Harmony",
-    description: "Gently balances lower-face proportions around your existing structure.",
-    jaw: 0.22,
-    chin: 0.16,
-    nose: 0.12,
-    lips: 0,
-    brows: 0.08,
-    symmetry: 0.34,
-  },
-  {
-    id: "symmetry",
-    label: "Symmetry",
-    description: "Softens only measurable paired-feature drift, with a natural deadband.",
-    jaw: 0,
-    chin: 0,
-    nose: 0,
-    lips: 0,
-    brows: 0,
-    symmetry: 0.72,
-  },
-  {
-    id: "dimorphism",
-    label: "Dimorphism",
-    description: "Adds conservative jaw and brow definition without changing identity.",
-    jaw: 0.72,
-    chin: 0.34,
-    nose: 0.06,
-    lips: 0,
-    brows: 0.2,
-    symmetry: 0.18,
-  },
-];
 
 const FACE_OVAL = [
   10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365,
@@ -83,10 +48,6 @@ const publicAsset = (path: string) => {
     (import.meta as ImportMeta & { env?: { BASE_URL?: string } }).env?.BASE_URL ?? "/";
   return `${base.endsWith("/") ? base : `${base}/`}${path.replace(/^\//, "")}`;
 };
-
-export function getPreset(id: string) {
-  return PRESETS.find((preset) => preset.id === id) ?? PRESETS[0];
-}
 
 export async function createFaceLandmarker(): Promise<FaceLandmarker> {
   if (!landmarkerPromise) {
@@ -109,8 +70,8 @@ export async function createFaceLandmarker(): Promise<FaceLandmarker> {
         minFaceDetectionConfidence: 0.65,
         minFacePresenceConfidence: 0.65,
         minTrackingConfidence: 0.65,
-        outputFaceBlendshapes: false,
-        outputFacialTransformationMatrixes: false,
+        outputFaceBlendshapes: true,
+        outputFacialTransformationMatrixes: true,
       };
       try {
         return await FaceLandmarker.createFromOptions(vision, {
@@ -128,14 +89,25 @@ export async function createFaceLandmarker(): Promise<FaceLandmarker> {
   return landmarkerPromise;
 }
 
-export async function detectLandmarks(image: HTMLImageElement | HTMLCanvasElement | HTMLVideoElement): Promise<Point[]> {
+export async function detectFace(image: HTMLImageElement | HTMLCanvasElement | HTMLVideoElement): Promise<FaceObservation> {
   const landmarker = await createFaceLandmarker();
   const result = landmarker.detect(image);
   const face = result.faceLandmarks?.[0];
   if (!face || face.length < 468) {
     throw new Error("We couldn’t find one clear face in this photo.");
   }
-  return face.map((point) => ({ x: point.x, y: point.y, z: point.z }));
+  const categories = result.faceBlendshapes?.[0]?.categories ?? [];
+  const blendshapes = Object.fromEntries(categories.map((category) => [category.categoryName, category.score]));
+  const matrix = result.facialTransformationMatrixes?.[0];
+  return {
+    landmarks: face.map((point) => ({ x: point.x, y: point.y, z: point.z })),
+    blendshapes,
+    transformationMatrix: matrix ? { rows: matrix.rows, columns: matrix.columns, data: Array.from(matrix.data) } : undefined,
+  };
+}
+
+export async function detectLandmarks(image: HTMLImageElement | HTMLCanvasElement | HTMLVideoElement): Promise<Point[]> {
+  return (await detectFace(image)).landmarks;
 }
 
 type Control = { source: Point; dx: number; dy: number; radius: number; region: string };
@@ -155,34 +127,6 @@ const SYMMETRY_PAIRS = [
 
 const clamp = (value: number, min: number, max: number) =>
   Math.max(min, Math.min(max, value));
-
-export function analyzeFace(points: Point[], width = 1, height = 1): FaceAnalysis {
-  const distance = (a: number, b: number) =>
-    Math.hypot(
-      (points[a].x - points[b].x) * width,
-      (points[a].y - points[b].y) * height,
-    );
-  const faceWidth = Math.max(distance(234, 454), 0.001);
-  const faceHeight = Math.max(distance(10, 152), 0.001);
-  const jawToFace = distance(172, 397) / faceWidth;
-  const noseToFace = distance(49, 279) / faceWidth;
-  const mouthToFace = distance(61, 291) / faceWidth;
-  const lowerThird = distance(2, 152) / faceHeight;
-  const frame = createPoseFrame(points, width, height);
-  const symmetryError =
-    SYMMETRY_PAIRS.reduce((total, [left, right]) => {
-      return total + Math.abs(frame.local(left).v - frame.local(right).v) / faceHeight;
-    }, 0) / SYMMETRY_PAIRS.length;
-  return {
-    metrics: {
-      jawToFace,
-      noseToFace,
-      mouthToFace,
-      lowerThird,
-      pairedDeviation: symmetryError * 100,
-    },
-  };
-}
 
 function createPoseFrame(points: Point[], width: number, height: number) {
   const point = (index: number) => ({
@@ -219,7 +163,7 @@ function buildControls(
   points: Point[],
   width: number,
   height: number,
-  preset: MorphPreset,
+  plan: MorphPlan,
   strength: number,
 ): Control[] {
   const controls: Control[] = [];
@@ -233,30 +177,16 @@ function buildControls(
     Math.abs(frame.local(152).v - frame.local(10).v),
     1,
   );
-  const scale = Math.min(faceWidth, faceHeight) * 0.035 * strength;
-  const analysis = analyzeFace(points, width, height);
-  let jawFactor = preset.jaw;
-  let chinFactor = preset.chin;
-  let noseFactor = preset.nose;
-  let lipFactor = preset.lips;
-  let browFactor = preset.brows;
-  if (preset.id === "harmony") {
-    // These centers are conservative engineering references, not an attractiveness score.
-    // Only a small fraction of a measured deviation is applied.
-    jawFactor = clamp((0.67 - analysis.metrics.jawToFace) * 2.2, -0.25, 0.25);
-    chinFactor = clamp((0.36 - analysis.metrics.lowerThird) * 1.5, -0.16, 0.16);
-    noseFactor = clamp((analysis.metrics.noseToFace - 0.285) * 1.5, -0.12, 0.16);
-    lipFactor = 0;
-    browFactor = 0.08;
-  } else if (preset.id === "dimorphism") {
-    // Add definition along the existing lower contour; do not infer gender or replace shape.
-    jawFactor = preset.jaw;
-    chinFactor = preset.chin;
-    noseFactor = preset.nose;
-    lipFactor = 0;
-    browFactor = preset.brows;
-  }
-  const movementLimit = faceWidth * 0.015;
+  const candidateScale = plan.selectedCandidate === "full" ? 1 : plan.selectedCandidate === "balanced" ? 0.86 : plan.selectedCandidate === "light" ? 0.62 : 0;
+  const scale = Math.min(faceWidth, faceHeight) * 0.085 * strength * candidateScale;
+  const movementLimit = faceWidth * 0.02;
+  const actionAmount = (primitive: string) => plan.actions.find((action) => action.primitive === primitive)?.amount ?? 0;
+  const jawFactor = actionAmount("jaw-width");
+  const chinFactor = actionAmount("chin-length");
+  const noseFactor = actionAmount("nose-width");
+  const lipFactor = actionAmount("mouth-width");
+  const browFactor = actionAmount("brow-height");
+  const symmetryFactor = actionAmount("paired-alignment");
   const add = (
     index: number,
     dx: number,
@@ -281,13 +211,23 @@ function buildControls(
     add(index, movement.dx, movement.dy, radius, region);
   };
 
-  // Move the lower contour as a tapered group. The cheek extremes (234/454) stay fixed.
+  // Compile named primitives into dense-mesh handles. Rules never address raw
+  // points directly; they blend first in primitive space, then compile once.
   const jaw = jawFactor * scale;
   const jawWeights = [1, 0.88, 0.66, 0.42, 0.2, 0.06];
-  [172, 136, 150, 149, 176, 148].forEach((index, order) =>
+  const visualLeftJaw = [172, 136, 150, 149, 176, 148];
+  const visualRightJaw = [397, 365, 379, 378, 400, 377];
+  const noseU = frame.local(1).u;
+  const leftSpan = Math.abs(noseU - frame.local(234).u);
+  const rightSpan = Math.abs(frame.local(454).u - noseU);
+  const yawSignal = Math.abs(leftSpan - rightSpan) / Math.max(leftSpan + rightSpan, 1);
+  const profileLike = yawSignal > 0.42;
+  const useVisualLeft = !profileLike || leftSpan >= rightSpan;
+  const useVisualRight = !profileLike || rightSpan >= leftSpan;
+  if (useVisualLeft) visualLeftJaw.forEach((index, order) =>
     addLocal(index, -jaw * jawWeights[order], 0, faceWidth * 0.075, "Jaw"),
   );
-  [397, 365, 379, 378, 400, 377].forEach((index, order) =>
+  if (useVisualRight) visualRightJaw.forEach((index, order) =>
     addLocal(index, jaw * jawWeights[order], 0, faceWidth * 0.075, "Jaw"),
   );
 
@@ -297,30 +237,28 @@ function buildControls(
   addLocal(377, 0, chin * 0.2, faceWidth * 0.065, "Chin");
 
   const nose = noseFactor * scale;
-  addLocal(49, nose * 0.22, 0, faceWidth * 0.05, "Nose");
-  addLocal(279, -nose * 0.22, 0, faceWidth * 0.05, "Nose");
+  if (!profileLike) {
+    [98, 97, 64, 49].forEach((index, order) => addLocal(index, nose * (0.24 - order * 0.025), 0, faceWidth * 0.048, "Nose"));
+    [327, 326, 294, 279].forEach((index, order) => addLocal(index, -nose * (0.24 - order * 0.025), 0, faceWidth * 0.048, "Nose"));
+  }
 
   const lipDelta = lipFactor * scale;
   if (Math.abs(lipDelta) > 0.001) {
-    addLocal(61, -lipDelta * 0.12, 0, faceWidth * 0.05, "Lips");
-    addLocal(291, lipDelta * 0.12, 0, faceWidth * 0.05, "Lips");
+    [61, 78, 185, 146].forEach((index) => addLocal(index, -lipDelta * 0.2, 0, faceWidth * 0.046, "Lips"));
+    [291, 308, 409, 375].forEach((index) => addLocal(index, lipDelta * 0.2, 0, faceWidth * 0.046, "Lips"));
   }
 
   const brow = browFactor * scale;
   const browWeights = [0.7, 0.9, 1, 0.78, 0.5];
-  [70, 63, 105, 66, 107].forEach((index, order) =>
-    addLocal(index, 0, -brow * 0.16 * browWeights[order], faceWidth * 0.045, "Brows"),
+  if (useVisualLeft) [70, 63, 105, 66, 107].forEach((index, order) =>
+    addLocal(index, 0, -brow * 0.18 * browWeights[order], faceWidth * 0.045, "Brows"),
   );
-  [300, 293, 334, 296, 336].forEach((index, order) =>
-    addLocal(index, 0, -brow * 0.16 * browWeights[order], faceWidth * 0.045, "Brows"),
+  if (useVisualRight) [300, 293, 334, 296, 336].forEach((index, order) =>
+    addLocal(index, 0, -brow * 0.18 * browWeights[order], faceWidth * 0.045, "Brows"),
   );
 
-  const noseU = frame.local(1).u;
-  const leftSpan = Math.abs(noseU - frame.local(234).u);
-  const rightSpan = Math.abs(frame.local(454).u - noseU);
-  const yawSignal = Math.abs(leftSpan - rightSpan) / Math.max(leftSpan + rightSpan, 1);
   const poseFade = clamp(1 - yawSignal / 0.18, 0, 1);
-  const symmetry = preset.symmetry * strength * 0.24 * poseFade;
+  const symmetry = symmetryFactor * strength * 0.32 * poseFade;
   const centerU = (frame.local(10).u + frame.local(152).u + frame.local(1).u) / 3;
   const deadband = faceHeight * 0.0035;
   for (const [li, ri] of SYMMETRY_PAIRS.slice(0, 4)) {
@@ -701,7 +639,7 @@ function planIsSafe(
 export function morphImage(
   sourceCanvas: HTMLCanvasElement,
   landmarks: Point[],
-  preset: MorphPreset,
+  plan: MorphPlan,
   strengthPercent: number,
 ): MorphResult {
   const { width, height } = sourceCanvas;
@@ -720,10 +658,11 @@ export function morphImage(
       maxMovementPx: 0,
       safetyScale: 0,
       safetyStatus: "identity",
+      plan,
     };
   }
 
-  const controls = buildControls(landmarks, width, height, preset, strength);
+  const controls = buildControls(landmarks, width, height, plan, strength);
   const mesh = buildFaceMesh(sourceCanvas, landmarks);
   const rawDisplacements = mesh.points.map((point, index) =>
     index < mesh.facePointCount
@@ -795,6 +734,7 @@ export function morphImage(
     maxMovementPx,
     safetyScale: identityOnly ? 0 : planScale,
     safetyStatus: identityOnly ? "identity" : planScale < 0.995 ? "weakened" : "passed",
+    plan,
   };
 }
 
@@ -808,10 +748,10 @@ export function drawLandmarkOverlay(
   ctx.save();
   ctx.fillStyle = color;
   ctx.globalAlpha = 0.78;
-  for (const index of [...FACE_OVAL, 33, 133, 263, 362, 61, 291, 1, 152]) {
+  for (const index of semanticOverlayIndices(landmarks.length)) {
     const point = landmarks[index];
     ctx.beginPath();
-    ctx.arc(point.x * canvas.width, point.y * canvas.height, Math.max(1.4, canvas.width / 650), 0, Math.PI * 2);
+    ctx.arc(point.x * canvas.width, point.y * canvas.height, Math.max(1.15, canvas.width / 820), 0, Math.PI * 2);
     ctx.fill();
   }
   ctx.restore();

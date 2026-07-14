@@ -1,47 +1,96 @@
-# Harmonia V1
+# Harmonia V2
 
 Public app: https://krishnatheaverage.github.io/harmonia/
 
-Harmonia is a private, browser-based portrait reshaping studio. It detects a
-single clear face with MediaPipe landmarks and uses a bounded, fixed-topology
-deformation mesh to move only pixels from the source image. It does not
-generate skin, hair, shadows, color, or background content.
+Harmonia is a private, browser-based portrait reshaping studio. It analyzes one
+clear face, proposes a conservative combination of Harmony, Symmetry, and
+Dimorphism directions, then moves only pixels already present in the source
+image. It does not generate or replace skin, hair, facial hair, shadows, color,
+backgrounds, or missing anatomy.
 
-The app reports geometric measurements; it does not claim to calculate an
-objective beauty score or a universal ideal face.
+Harmonia reports geometric relationships and planning confidence. It does not
+calculate an attractiveness score, diagnose a person, or claim that one set of
+ratios is a universal ideal.
 
-## Included
+## V2 analysis and planning
 
-- local JPG, PNG, and WebP upload up to 20 MB
-- camera-first automatic scan after explicit browser permission
-- synchronized frame capture so landmarks and edited pixels always match
-- blur, lighting, resolution, framing, pose, motion, and expression gates
-- frontal and conservative three-quarter portrait support
-- adaptive Facial Harmony, Symmetry, and Dimorphism morph plans
-- geometric jaw, nose, mouth, lower-third, and paired-drift readouts
-- MediaPipe's dense canonical face topology with a fixed outer boundary ring
-- target smoothing plus flip, stretch, shear, bounds, and area-ratio checks
-- automatic strength backoff; unsafe plans return the original geometry
-- strength control, before/after preview, and face map
-- PNG export without the diagnostic overlay
-- no image upload API, persistence, analytics, or authentication
+- MediaPipe's full 468-vertex face mesh remains the detection and deformation
+  substrate.
+- A versioned Harmonia schema maps 104 product-owned semantic proxies onto that
+  dense mesh. These labels make planning explainable; they are not official
+  MediaPipe anatomical landmarks and are not a medical annotation set.
+- An exact 408-entry measurement catalog covers facial envelope, eyes, brows,
+  nose, lips, lower face, jaw, chin, paired drift, and pose/profile context.
+- Every measurement declares which poses can use it, its confidence inputs, and
+  whether it is a target, guardrail, context signal, or preservation signal.
+- Region editability combines pose, visibility, image quality, expression, mesh
+  support, and distance from protected boundaries. Low-confidence regions lock
+  or receive a smaller displacement budget.
+- Harmony, Symmetry, and Dimorphism are blended into one joint plan instead of
+  being applied as mutually exclusive filters.
+- Deadbands, edit budgets, compatibility checks, and geometry validation allow
+  the planner to return a conservative no-op when an edit is not well supported.
 
-## Morph pipeline
+The detailed contract, including primitives, schemas, pose validity, confidence,
+editability, planner rules, and limitations, is in
+[docs/facial-analysis-spec.md](docs/facial-analysis-spec.md).
 
-1. Freeze one exact camera frame and detect its dense landmarks.
-2. Reject frames that are blurry, poorly lit, moving, strongly posed, or non-neutral.
-3. Measure pose-normalized geometry and generate small, feature-grouped targets.
-4. Smooth targets across the canonical face mesh while holding a narrow outer ring fixed.
-5. Reduce the edit until every triangle passes orientation, area, stretch, shear, and image-bound checks.
-6. Replace the complete face region once and leave pixels outside the fixed boundary untouched.
+## Capture support
+
+Harmonia is designed for one unobstructed face in:
+
+- a frontal view;
+- a moderate three-quarter view; or
+- a clean side profile with enough visible contour.
+
+Neutral expressions and mild smiles are preferred. V2 can plan conservative
+changes to the jaw, chin, nose, lips, brows, face envelope, and mild bilateral
+drift. A direction or measurement is disabled when the current pose does not
+show the anatomy needed to estimate it reliably; for example, bilateral
+symmetry is not treated as measurable from a profile.
+
+## Pixel-only morph pipeline
+
+1. Freeze one exact camera frame and detect its dense landmarks, optional facial
+   transform, and expression signals.
+2. Reject or limit frames that are blurry, poorly lit, moving, strongly posed,
+   covered, or too expressive.
+3. Resolve pose and map the dense mesh to 104 semantic planning proxies.
+4. Evaluate the pose-valid subset of the 408-measurement catalog with confidence
+   and editability scores.
+5. Create and rank small joint-plan candidates from the three direction weights;
+   preserve regions that are already coherent or uncertain.
+6. Smooth selected targets across the fixed face topology while holding a narrow
+   outer boundary ring fixed.
+7. Reduce the edit until every triangle passes orientation, area, stretch, shear,
+   and image-bound checks. If no candidate is safe, return the original geometry.
+8. Replace the face region once; leave texture, lighting, color, and all pixels
+   outside the protected boundary unchanged.
+
+## Privacy
+
+The face landmark model and MediaPipe WebAssembly runtime are bundled under
+`public/`. Camera frames and local files are processed in the browser. Harmonia
+does not include an image-upload API, persistence, analytics, or authentication.
 
 ## Research basis
 
-The implementation follows the conservative parts of the published literature:
-dense canonical face geometry from [MediaPipe Face Mesh](https://github.com/google-ai-edge/mediapipe/wiki/MediaPipe-Face-Mesh),
-small identity-preserving target changes from the [Facial Reshaping Operator](https://hubertshum.com/publications/eswa2021beautification/files/eswa2021beautification.pdf),
+The implementation uses the conservative, geometry-focused parts of the
+published literature: MediaPipe's [468-point dense face mesh and canonical face
+model](https://github.com/google-ai-edge/mediapipe/wiki/MediaPipe-Face-Mesh), the
+optional [facial transformation matrix and blendshape outputs](https://ai.google.dev/edge/api/mediapipe/python/mp/tasks/vision/FaceLandmarkerResult),
+the [Attention Mesh](https://research.google/pubs/attention-mesh-high-fidelity-face-mesh-prediction-in-real-time/)
+work on locally accurate eye and lip landmarks, identity-preserving local target
+changes from the [Facial Reshaping Operator](https://hubertshum.com/publications/eswa2021beautification/files/eswa2021beautification.pdf),
 local shape regularization from [Laplacian surface editing](https://diglib.eg.org/items/ee43c2c6-4956-4ff0-9db1-c946306a5b99),
-and explicit foldover prevention motivated by [Locally Injective Mappings](https://igl.ethz.ch/projects/LIM/).
+and foldover prevention motivated by [Locally Injective Mappings](https://igl.ethz.ch/projects/LIM/).
+
+Normative data is treated as contextual evidence, not a universal target. The
+[3D Facial Norms database](https://pubmed.ncbi.nlm.nih.gov/26492185/) provides an
+example of standardized landmark and measurement collection, while a direct
+[comparison of facial norm sources](https://pubmed.ncbi.nlm.nih.gov/31053285/)
+found material differences between datasets. Harmonia therefore uses broad
+deadbands and self-relative consistency instead of a single population mean.
 
 ## Run locally
 
@@ -61,6 +110,3 @@ npm run lint
 npm test
 npm run build:pages
 ```
-
-The face landmark model and MediaPipe WebAssembly runtime are both bundled under
-`public/`, so camera frames and photos remain in the browser without a CDN.

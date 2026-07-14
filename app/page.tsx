@@ -3,12 +3,14 @@
 import { ChangeEvent, CSSProperties, DragEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
   analyzeFace,
-  detectLandmarks,
+  createMorphPlan,
+  detectFace,
   drawLandmarkOverlay,
-  getPreset,
   morphImage,
-  PRESETS,
+  type DirectionMix,
   type FaceAnalysis,
+  type FaceObservation,
+  type MorphPlan,
   type Point,
 } from "../lib/morph";
 
@@ -31,6 +33,41 @@ type FrameAssessment = {
   title: string;
   hint: string;
   sharpness: number;
+  qualityConfidence: number;
+};
+
+type DirectionKey = "harmony" | "symmetry" | "dimorphism";
+
+const DIRECTION_OPTIONS: Array<{
+  id: DirectionKey;
+  number: string;
+  label: string;
+  description: string;
+}> = [
+  {
+    id: "harmony",
+    number: "01",
+    label: "Harmony",
+    description: "Balances connected proportions without chasing a single template.",
+  },
+  {
+    id: "symmetry",
+    number: "02",
+    label: "Symmetry",
+    description: "Softens only confident paired drift when the pose supports it.",
+  },
+  {
+    id: "dimorphism",
+    number: "03",
+    label: "Dimorphism",
+    description: "Adds restrained angular definition within your existing anatomy.",
+  },
+];
+
+const DEFAULT_DIRECTION_MIX: DirectionMix = {
+  harmony: 60,
+  symmetry: 35,
+  dimorphism: 30,
 };
 
 const STABILITY_LANDMARKS = [10, 152, 234, 454, 33, 263, 1, 61, 291, 172, 397];
@@ -113,16 +150,16 @@ function faceCropMetrics(canvas: HTMLCanvasElement, landmarks: Point[]) {
 }
 
 function assessFrame(canvas: HTMLCanvasElement, landmarks: Point[], mode: "camera" | "file"): FrameAssessment {
-  const faceWidth = Math.abs(landmarks[454].x - landmarks[234].x);
-  const faceHeight = Math.abs(landmarks[152].y - landmarks[10].y);
-  const faceWidthPx = faceWidth * canvas.width;
-  const faceHeightPx = faceHeight * canvas.height;
   const minFaceX = Math.min(...landmarks.map((point) => point.x));
   const maxFaceX = Math.max(...landmarks.map((point) => point.x));
   const minFaceY = Math.min(...landmarks.map((point) => point.y));
   const maxFaceY = Math.max(...landmarks.map((point) => point.y));
-  const centerX = (landmarks[234].x + landmarks[454].x) / 2;
-  const centerY = (landmarks[10].y + landmarks[152].y) / 2;
+  const faceWidth = maxFaceX - minFaceX;
+  const faceHeight = maxFaceY - minFaceY;
+  const faceWidthPx = faceWidth * canvas.width;
+  const faceHeightPx = faceHeight * canvas.height;
+  const centerX = (minFaceX + maxFaceX) / 2;
+  const centerY = (minFaceY + maxFaceY) / 2;
   const eyeLeft = {
     x: (landmarks[33].x + landmarks[133].x) / 2,
     y: (landmarks[33].y + landmarks[133].y) / 2,
@@ -132,58 +169,63 @@ function assessFrame(canvas: HTMLCanvasElement, landmarks: Point[], mode: "camer
     y: (landmarks[263].y + landmarks[362].y) / 2,
   };
   const roll = Math.abs(Math.atan2((eyeRight.y - eyeLeft.y) * canvas.height, (eyeRight.x - eyeLeft.x) * canvas.width) * (180 / Math.PI));
-  const noseX = landmarks[1].x;
-  const leftNoseSpan = Math.abs(noseX - landmarks[234].x);
-  const rightNoseSpan = Math.abs(landmarks[454].x - noseX);
-  const yaw = Math.abs(leftNoseSpan - rightNoseSpan) / Math.max(0.001, leftNoseSpan + rightNoseSpan);
   const pixelDistance = (a: Point, b: Point) => Math.hypot((a.x - b.x) * canvas.width, (a.y - b.y) * canvas.height);
   const mouthWidthPx = pixelDistance(landmarks[61], landmarks[291]);
   const mouthOpen = pixelDistance(landmarks[13], landmarks[14]) / Math.max(1, mouthWidthPx);
   const mouthToFace = mouthWidthPx / Math.max(1, faceWidthPx);
+  const noseToRight = pixelDistance(landmarks[1], landmarks[234]);
+  const noseToLeft = pixelDistance(landmarks[1], landmarks[454]);
+  const yawSignal = Math.abs(noseToRight - noseToLeft) / Math.max(1, noseToRight + noseToLeft);
+  const profileLike = yawSignal > 0.38;
   const crop = faceCropMetrics(canvas, landmarks);
   const cameraMode = mode === "camera";
+  const sharpnessConfidence = Math.max(0, Math.min(1, (crop.sharpness - 18) / 90));
+  const exposureConfidence = Math.max(0, 1 - Math.abs(crop.brightness - 128) / 122);
+  const detailConfidence = Math.max(0, Math.min(1, Math.min(faceWidthPx / 360, faceHeightPx / 460)));
+  const qualityConfidence = Math.max(0, Math.min(1, 0.28 + sharpnessConfidence * 0.32 + exposureConfidence * 0.2 + detailConfidence * 0.2));
+  const quality = { sharpness: crop.sharpness, qualityConfidence };
 
   if (cameraMode && (faceWidth < 0.23 || faceHeight < 0.34)) {
-    return { ok: false, issue: "framing", title: "Move a little closer", hint: "Keep your full face inside the guide.", sharpness: crop.sharpness };
+    return { ok: false, issue: "framing", title: "Move a little closer", hint: "Keep your full face inside the guide.", ...quality };
   }
   if (cameraMode && (faceWidth > 0.72 || faceHeight > 0.84)) {
-    return { ok: false, issue: "framing", title: "Move a little farther back", hint: "Leave a small border around your face.", sharpness: crop.sharpness };
+    return { ok: false, issue: "framing", title: "Move a little farther back", hint: "Leave a small border around your face.", ...quality };
   }
   if (cameraMode && (centerX < 0.29 || centerX > 0.71 || centerY < 0.3 || centerY > 0.7)) {
-    return { ok: false, issue: "framing", title: "Center your face", hint: "Align your eyes and chin inside the guide.", sharpness: crop.sharpness };
+    return { ok: false, issue: "framing", title: "Center your face", hint: "Align your eyes and chin inside the guide.", ...quality };
   }
   if (!cameraMode && (minFaceX < 0.015 || maxFaceX > 0.985 || minFaceY < 0.015 || maxFaceY > 0.985)) {
-    return { ok: false, issue: "framing", title: "Face is too close to the edge", hint: "Choose a portrait with a small clear border around the face.", sharpness: crop.sharpness };
+    return { ok: false, issue: "framing", title: "Face is too close to the edge", hint: "Choose a portrait with a small clear border around the face.", ...quality };
   }
   const minimumFaceWidth = cameraMode ? Math.min(240, canvas.width * 0.28) : 140;
   const minimumFaceHeight = cameraMode ? Math.min(300, canvas.height * 0.38) : 180;
   if (faceWidthPx < minimumFaceWidth || faceHeightPx < minimumFaceHeight) {
-    return { ok: false, issue: "pixels", title: "Face is too small", hint: cameraMode ? "Move closer so the scan has enough detail." : "Choose a higher-resolution portrait where the face is larger.", sharpness: crop.sharpness };
+    return { ok: false, issue: "pixels", title: "Face is too small", hint: cameraMode ? "Move closer so the scan has enough detail." : "Choose a higher-resolution, closer photo.", ...quality };
   }
-  if (yaw > (cameraMode ? 0.16 : 0.22)) {
-    return { ok: false, issue: "yaw", title: "Look straight at the camera", hint: "Turn until both sides of your face are evenly visible.", sharpness: crop.sharpness };
+  if (roll > (cameraMode ? 28 : 32)) {
+    return { ok: false, issue: "roll", title: "Level your head", hint: "Keep the line between your eyes roughly horizontal.", ...quality };
   }
-  if (roll > (cameraMode ? 8 : 15)) {
-    return { ok: false, issue: "roll", title: "Level your head", hint: "Keep the line between your eyes horizontal.", sharpness: crop.sharpness };
-  }
-  if (mouthOpen > (cameraMode ? 0.17 : 0.26) || mouthToFace < (cameraMode ? 0.25 : 0.22)) {
-    return { ok: false, issue: "mouth", title: "Relax your mouth", hint: "Rest your lips naturally—do not open or purse them.", sharpness: crop.sharpness };
+  const mouthUnsupported = profileLike
+    ? mouthOpen > (cameraMode ? 0.42 : 0.5)
+    : mouthOpen > (cameraMode ? 0.2 : 0.28) || mouthToFace < (cameraMode ? 0.15 : 0.12);
+  if (mouthUnsupported) {
+    return { ok: false, issue: "mouth", title: "Relax your mouth", hint: "Rest your lips naturally—do not open or purse them.", ...quality };
   }
   if (crop.brightness < (cameraMode ? 48 : 36) || crop.darkFraction > (cameraMode ? 0.22 : 0.34)) {
-    return { ok: false, issue: "dark", title: "Add light in front of you", hint: "Avoid a bright window behind your head.", sharpness: crop.sharpness };
+    return { ok: false, issue: "dark", title: "Add light in front of you", hint: "Avoid a bright window behind your head.", ...quality };
   }
   if (crop.brightness > (cameraMode ? 210 : 224) || crop.brightFraction > (cameraMode ? 0.2 : 0.34)) {
-    return { ok: false, issue: "bright", title: "Lighting is too bright", hint: "Step away from direct light so facial detail is visible.", sharpness: crop.sharpness };
+    return { ok: false, issue: "bright", title: "Lighting is too bright", hint: "Step away from direct light so facial detail is visible.", ...quality };
   }
   if (crop.sharpness < (cameraMode ? 32 : 24)) {
-    return { ok: false, issue: "blur", title: "Image is too blurry", hint: cameraMode ? "Wipe the lens and hold the phone still." : "Choose a sharper, in-focus portrait.", sharpness: crop.sharpness };
+    return { ok: false, issue: "blur", title: "Image is too blurry", hint: cameraMode ? "Wipe the lens and hold the phone still." : "Choose a sharper, in-focus portrait.", ...quality };
   }
-  return { ok: true, issue: "none", title: "Face quality looks good", hint: "Hold still while we confirm seven clear frames.", sharpness: crop.sharpness };
+  return { ok: true, issue: "none", title: "Pose and image quality look good", hint: "Hold still while we confirm seven clear frames.", ...quality };
 }
 
 function landmarkMotion(previous: Point[], current: Point[], width: number, height: number) {
-  const previousFaceWidth = Math.abs(previous[454].x - previous[234].x) * width;
-  const currentFaceWidth = Math.abs(current[454].x - current[234].x) * width;
+  const previousFaceWidth = (Math.max(...previous.map((point) => point.x)) - Math.min(...previous.map((point) => point.x))) * width;
+  const currentFaceWidth = (Math.max(...current.map((point) => point.x)) - Math.min(...current.map((point) => point.x))) * width;
   const faceWidth = Math.max(1, (previousFaceWidth + currentFaceWidth) / 2);
   const squaredMotion = STABILITY_LANDMARKS.reduce((total, index) => {
     const distance = Math.hypot(
@@ -230,20 +272,160 @@ function fitDimensions(width: number, height: number, maxSide = 1800) {
   return { width: Math.round(width * ratio), height: Math.round(height * ratio) };
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" ? value as Record<string, unknown> : {};
+}
+
+function firstNumber(record: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+  }
+  return undefined;
+}
+
+function firstString(record: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return undefined;
+}
+
+function displayLabel(value: string) {
+  return value
+    .replace(/[-_]+/g, " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+function poseReadout(analysis: FaceAnalysis | null) {
+  const root = asRecord(analysis);
+  const poseValue = root.pose;
+  const pose = asRecord(poseValue);
+  const rawLabel =
+    (typeof poseValue === "string" ? poseValue : undefined) ??
+    firstString(pose, ["label", "classification", "class", "kind", "id"]) ??
+    firstString(root, ["poseClass", "poseLabel"]) ??
+    "Analyzed pose";
+  const rawConfidence =
+    firstNumber(pose, ["confidence", "score", "poseConfidence"]) ??
+    firstNumber(root, ["poseConfidence"]) ??
+    0;
+  const confidence = rawConfidence > 1 ? rawConfidence / 100 : rawConfidence;
+  return {
+    rawLabel,
+    label: displayLabel(rawLabel),
+    confidence: Math.max(0, Math.min(1, confidence)),
+  };
+}
+
+function isUnsupportedPose(analysis: FaceAnalysis) {
+  return poseReadout(analysis).rawLabel.toLowerCase().includes("unsupported");
+}
+
+function analysisCounts(analysis: FaceAnalysis | null) {
+  const root = asRecord(analysis);
+  const measurements = Array.isArray(root.measurements) ? root.measurements : [];
+  const semanticLandmarkCount = firstNumber(root, ["semanticLandmarkCount"]) ?? 104;
+  const measurementCount = firstNumber(root, ["measurementCount", "derivedMeasurementCount"]) ?? (measurements.length || 408);
+  const measuredValid = measurements.filter((measurement) => asRecord(measurement).valid === true).length;
+  const validMeasurementCount = firstNumber(root, ["validMeasurementCount", "validFeatureCount"]) ?? (measuredValid || measurementCount);
+  return { semanticLandmarkCount, measurementCount, validMeasurementCount };
+}
+
+type EditabilityReadout = {
+  region: string;
+  score: number;
+  reason?: string;
+};
+
+function editabilityReadouts(analysis: FaceAnalysis | null): EditabilityReadout[] {
+  const root = asRecord(analysis);
+  const source = root.regionEditability ?? root.editability;
+  const entries: Array<[string, unknown]> = Array.isArray(source)
+    ? source.map((entry, index) => {
+        const item = asRecord(entry);
+        return [firstString(item, ["region", "label", "id"]) ?? `region-${index}`, entry];
+      })
+    : Object.entries(asRecord(source));
+
+  return entries
+    .map(([key, value]) => {
+      const item = asRecord(value);
+      const rawScore = typeof value === "number"
+        ? value
+        : firstNumber(item, ["score", "editability", "confidence", "value"]) ?? 0;
+      const score = rawScore > 1 ? rawScore / 100 : rawScore;
+      const reasons = item.reasons;
+      const reason = firstString(item, ["reason", "rationale"]) ??
+        (Array.isArray(reasons) && typeof reasons[0] === "string" ? reasons[0] : undefined);
+      return {
+        region: displayLabel(firstString(item, ["region", "label"]) ?? key),
+        score: Math.max(0, Math.min(1, score)),
+        reason,
+      };
+    })
+    .filter((item) => !item.region.toLowerCase().includes("maxilla"))
+    .slice(0, 8);
+}
+
+type PlanActionReadout = {
+  region: string;
+  rationale: string;
+  confidence?: number;
+};
+
+function planActionReadouts(plan: MorphPlan | null): PlanActionReadout[] {
+  const root = asRecord(plan);
+  const source = Array.isArray(root.actions)
+    ? root.actions
+    : Array.isArray(root.edits)
+      ? root.edits
+      : [];
+  return source.slice(0, 4).map((value, index) => {
+    if (typeof value === "string") {
+      return { region: displayLabel(value), rationale: "Selected by the pose-aware planner." };
+    }
+    const action = asRecord(value);
+    const rawConfidence = firstNumber(action, ["confidence", "score", "plannerConfidence"]);
+    return {
+      region: displayLabel(firstString(action, ["label", "region", "primitive", "id"]) ?? `Adjustment ${index + 1}`),
+      rationale: firstString(action, ["rationale", "reason", "description"]) ?? "Pose-valid, confidence-weighted adjustment.",
+      confidence: rawConfidence === undefined ? undefined : Math.max(0, Math.min(1, rawConfidence > 1 ? rawConfidence / 100 : rawConfidence)),
+    };
+  });
+}
+
+function preservedRegions(plan: MorphPlan | null) {
+  const root = asRecord(plan);
+  const value = root.preservedRegions;
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string").map(displayLabel).slice(0, 5);
+}
+
+function rejectedReasons(plan: MorphPlan | null) {
+  const value = asRecord(plan).rejectedReasons;
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string");
+}
+
 export default function Home() {
   const originalRef = useRef<HTMLCanvasElement>(null);
   const resultRef = useRef<HTMLCanvasElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const sourceRef = useRef<HTMLCanvasElement | null>(null);
-  const landmarksRef = useRef<Point[] | null>(null);
+  const observationRef = useRef<FaceObservation | null>(null);
+  const analysisRef = useRef<FaceAnalysis | null>(null);
+  const planRef = useRef<MorphPlan | null>(null);
+  const exportCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const scanRunRef = useRef(0);
   const [status, setStatus] = useState<Status>("empty");
   const [error, setError] = useState("");
   const [fileName, setFileName] = useState("");
-  const [presetId, setPresetId] = useState("harmony");
-  const [strength, setStrength] = useState(35);
+  const [directionMix, setDirectionMix] = useState<DirectionMix>(DEFAULT_DIRECTION_MIX);
+  const [strength, setStrength] = useState(42);
   const [showOriginal, setShowOriginal] = useState(false);
   const [showMesh, setShowMesh] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -252,6 +434,7 @@ export default function Home() {
   const [safetyScale, setSafetyScale] = useState(1);
   const [safetyStatus, setSafetyStatus] = useState<"passed" | "weakened" | "identity">("passed");
   const [analysis, setAnalysis] = useState<FaceAnalysis | null>(null);
+  const [plan, setPlan] = useState<MorphPlan | null>(null);
   const [scanProgress, setScanProgress] = useState(0);
   const [scanMessage, setScanMessage] = useState("Starting private scanner");
   const [scanHint, setScanHint] = useState("Keep one clear face inside the guide.");
@@ -267,12 +450,17 @@ export default function Home() {
 
   const paint = useCallback(() => {
     const source = sourceRef.current;
-    const landmarks = landmarksRef.current;
+    const observation = observationRef.current;
+    const faceAnalysis = analysisRef.current;
     const resultCanvas = resultRef.current;
     const originalCanvas = originalRef.current;
-    if (!source || !landmarks || !resultCanvas || !originalCanvas) return;
+    if (!source || !observation || !faceAnalysis || !resultCanvas || !originalCanvas) return;
 
-    const transformed = morphImage(source, landmarks, getPreset(presetId), strength);
+    const nextPlan = createMorphPlan(faceAnalysis, directionMix);
+    const transformed = morphImage(source, observation.landmarks, nextPlan, strength);
+    planRef.current = nextPlan;
+    exportCanvasRef.current = transformed.canvas;
+    setPlan(nextPlan);
     for (const [destination, image] of [
       [resultCanvas, transformed.canvas],
       [originalCanvas, source],
@@ -282,12 +470,12 @@ export default function Home() {
       const context = destination.getContext("2d", { alpha: false });
       context?.drawImage(image, 0, 0);
     }
-    if (showMesh) drawLandmarkOverlay(resultCanvas, landmarks);
+    if (showMesh) drawLandmarkOverlay(resultCanvas, observation.landmarks);
     setRegions(transformed.movedRegions);
     setMovement(transformed.maxMovementPx);
     setSafetyScale(transformed.safetyScale);
     setSafetyStatus(transformed.safetyStatus);
-  }, [presetId, strength, showMesh]);
+  }, [directionMix, strength, showMesh]);
 
   useEffect(() => {
     if (status !== "ready") return;
@@ -323,12 +511,20 @@ export default function Home() {
       context.imageSmoothingQuality = "high";
       context.drawImage(image, 0, 0, dimensions.width, dimensions.height);
 
-      const landmarks = await detectLandmarks(source);
-      const assessment = assessFrame(source, landmarks, "file");
+      const observation = await detectFace(source);
+      const assessment = assessFrame(source, observation.landmarks, "file");
       if (!assessment.ok) throw new Error(fileQualityError(assessment));
+      const nextAnalysis = analyzeFace(observation, source.width, source.height, {
+        qualityConfidence: assessment.qualityConfidence,
+        temporalStability: 1,
+      });
+      if (isUnsupportedPose(nextAnalysis)) {
+        throw new Error("This head angle is outside the safe morph range. Choose a clear front, three-quarter, or clean side profile.");
+      }
       sourceRef.current = source;
-      landmarksRef.current = landmarks;
-      setAnalysis(analyzeFace(landmarks, source.width, source.height));
+      observationRef.current = observation;
+      analysisRef.current = nextAnalysis;
+      setAnalysis(nextAnalysis);
       setStatus("ready");
       window.setTimeout(paint, 0);
     } catch (cause) {
@@ -379,10 +575,15 @@ export default function Home() {
       const run = ++scanRunRef.current;
       let stableFrames = 0;
       let previousLandmarks: Point[] | null = null;
-      let bestFrame: { canvas: HTMLCanvasElement; landmarks: Point[]; sharpness: number } | null = null;
+      let bestFrame: {
+        canvas: HTMLCanvasElement;
+        observation: FaceObservation;
+        assessment: FrameAssessment;
+        temporalStability: number;
+      } | null = null;
       setScanProgress(20);
       setScanMessage("Finding your face");
-      setScanHint("Center your face and look straight ahead.");
+      setScanHint("Center one front, three-quarter, or profile view.");
 
       const scan = async () => {
         if (run !== scanRunRef.current || !streamRef.current) return;
@@ -398,7 +599,8 @@ export default function Home() {
           // Detection runs on this frozen, mirrored canvas so the chosen pixels
           // and landmarks are guaranteed to come from the exact same frame.
           const frame = freezeMirroredFrame(video);
-          const landmarks = await detectLandmarks(frame);
+          const observation = await detectFace(frame);
+          const landmarks = observation.landmarks;
           const assessment = assessFrame(frame, landmarks, "camera");
 
           if (!assessment.ok) {
@@ -419,8 +621,9 @@ export default function Home() {
               setScanProgress(38);
             } else {
               stableFrames += 1;
-              if (!bestFrame || assessment.sharpness > bestFrame.sharpness) {
-                bestFrame = { canvas: frame, landmarks, sharpness: assessment.sharpness };
+              const temporalStability = Math.max(0, Math.min(1, 1 - motion * 34));
+              if (!bestFrame || assessment.sharpness > bestFrame.assessment.sharpness) {
+                bestFrame = { canvas: frame, observation, assessment, temporalStability };
               }
               setScanMessage(stableFrames < 7 ? `Checking clear frame ${stableFrames} of 7` : "Clear scan captured");
               setScanHint(stableFrames < 7 ? "Stay still and keep a relaxed, closed-mouth expression." : "Using the sharpest frame from this scan.");
@@ -430,9 +633,23 @@ export default function Home() {
 
           if (stableFrames >= 7 && bestFrame) {
             const chosen = bestFrame;
+            const nextAnalysis = analyzeFace(chosen.observation, chosen.canvas.width, chosen.canvas.height, {
+              qualityConfidence: chosen.assessment.qualityConfidence,
+              temporalStability: chosen.temporalStability,
+            });
+            if (isUnsupportedPose(nextAnalysis)) {
+              stableFrames = 0;
+              bestFrame = null;
+              setScanMessage("Turn toward a supported view");
+              setScanHint("Use a clear front, moderate three-quarter, or clean side profile.");
+              setScanProgress(30);
+              window.setTimeout(scan, 180);
+              return;
+            }
             sourceRef.current = chosen.canvas;
-            landmarksRef.current = chosen.landmarks;
-            setAnalysis(analyzeFace(chosen.landmarks, chosen.canvas.width, chosen.canvas.height));
+            observationRef.current = chosen.observation;
+            analysisRef.current = nextAnalysis;
+            setAnalysis(nextAnalysis);
             setFileName("camera-scan.jpg");
             setShowOriginal(false);
             setScanProgress(100);
@@ -468,13 +685,11 @@ export default function Home() {
   };
 
   const download = () => {
-    const source = sourceRef.current;
-    const landmarks = landmarksRef.current;
-    if (!source || !landmarks) return;
-    const canvas = morphImage(source, landmarks, getPreset(presetId), strength).canvas;
+    const canvas = exportCanvasRef.current;
+    if (!canvas) return;
     const link = document.createElement("a");
     const base = fileName.replace(/\.[^.]+$/, "") || "portrait";
-    link.download = `${base}-${presetId}.png`;
+    link.download = `${base}-harmonia-v2.png`;
     link.href = canvas.toDataURL("image/png", 1);
     link.click();
   };
@@ -484,6 +699,7 @@ export default function Home() {
     setError("");
     setFileName("");
     setAnalysis(null);
+    setPlan(null);
     setSafetyScale(1);
     setSafetyStatus("passed");
     setScanProgress(0);
@@ -491,7 +707,24 @@ export default function Home() {
     setScanHint("Keep one clear face inside the guide.");
     stopCamera();
     sourceRef.current = null;
-    landmarksRef.current = null;
+    observationRef.current = null;
+    analysisRef.current = null;
+    planRef.current = null;
+    exportCanvasRef.current = null;
+  };
+
+  const pose = poseReadout(analysis);
+  const counts = analysisCounts(analysis);
+  const editability = editabilityReadouts(analysis);
+  const planActions = planActionReadouts(plan);
+  const preserved = preservedRegions(plan);
+  const rejected = rejectedReasons(plan);
+  const activeDirectionLabels = DIRECTION_OPTIONS
+    .filter((option) => directionMix[option.id] > 0)
+    .map((option) => option.label);
+
+  const updateDirection = (direction: DirectionKey, value: number) => {
+    setDirectionMix((current: DirectionMix) => ({ ...current, [direction]: value }));
   };
 
   return (
@@ -568,62 +801,108 @@ export default function Home() {
 
         <aside className="control-panel">
           <div className="panel-heading">
-            <div><span className="step-number">01</span><h2>Choose a direction</h2></div>
-            {status === "ready" && <span className="ready-badge">Face mapped</span>}
+            <div><span className="step-number">01</span><h2>Blend directions</h2></div>
+            {status === "ready" && <span className="ready-badge">V2 map ready</span>}
           </div>
-          <p className="mode-intro">Each direction uses pose-normalized measurements to create a conservative morph plan around your own structure.</p>
-          <div className="preset-grid">
-            {PRESETS.map((option) => (
-              <button
-                key={option.id}
-                className={`preset-card ${presetId === option.id ? "selected" : ""}`}
-                onClick={() => setPresetId(option.id)}
-                aria-pressed={presetId === option.id}
-              >
-                <span className={`preset-glyph glyph-${option.id}`} aria-hidden="true"><i /><i /></span>
-                <span><strong>{option.label}</strong><small>{option.description}</small></span>
-                <b aria-hidden="true">{presetId === option.id ? "✓" : ""}</b>
-              </button>
+          <p className="mode-intro">These are simultaneous signals, not separate filters. The planner weighs them together against your pose, confidence and editable regions.</p>
+          <div className="direction-stack">
+            {DIRECTION_OPTIONS.map((option) => (
+              <article className={`direction-control direction-${option.id}`} key={option.id}>
+                <div className="direction-heading">
+                  <span className="direction-number">{option.number}</span>
+                  <div><strong>{option.label}</strong><small>{option.description}</small></div>
+                  <output>{directionMix[option.id]}%</output>
+                </div>
+                <input
+                  className="direction-range"
+                  style={{ "--direction-range": `${directionMix[option.id]}%` } as CSSProperties}
+                  type="range"
+                  min="0"
+                  max="100"
+                  value={directionMix[option.id]}
+                  onChange={(event) => updateDirection(option.id, Number(event.target.value))}
+                  aria-label={`${option.label} direction weight`}
+                />
+              </article>
             ))}
+          </div>
+          <div className="blend-note">
+            <span className="blend-orbit" aria-hidden="true"><i /><i /><i /></span>
+            <p><strong>One coordinated plan</strong><small>Invalid signals are quietly downweighted for the detected angle.</small></p>
           </div>
 
           <div className="divider" />
           <div className="strength-row">
-            <div><span className="step-number">02</span><h3>Edit strength</h3></div>
+            <div><span className="step-number">02</span><h3>Global strength</h3></div>
             <output>{strength}%</output>
           </div>
-          <input className="range" style={{ "--range": `${(strength / 70) * 100}%` } as CSSProperties} type="range" min="0" max="70" value={strength} onChange={(event) => setStrength(Number(event.target.value))} aria-label="Edit strength" />
-          <div className="range-labels"><span>Conservative</span><span>Safe maximum</span></div>
+          <input
+            className="range"
+            style={{ "--range": `${(strength / 70) * 100}%` } as CSSProperties}
+            type="range"
+            min="0"
+            max="70"
+            value={strength}
+            onChange={(event) => setStrength(Number(event.target.value))}
+            aria-label="Global edit strength"
+          />
+          <div className="range-labels"><span>Subtle</span><span>Conservative limit</span></div>
 
           {status === "ready" && (
             <div className="safety-card">
               <div>
                 <span className="safety-icon">◇</span>
-                <strong>{safetyStatus === "weakened" ? "Guardrail reduced this edit" : safetyStatus === "identity" ? "Original geometry retained" : `${getPreset(presetId).label} passed`}</strong>
-                <small>{regions.length ? regions.join(" · ") : "No safe region needed movement"}</small>
+                <strong>{safetyStatus === "weakened" ? "Guardrail reduced the blended plan" : safetyStatus === "identity" ? "Original geometry retained" : "Blended plan passed"}</strong>
+                <small>{regions.length ? regions.join(" · ") : "No confident region needed movement"}</small>
               </div>
-              <span>{Math.round(safetyScale * 100)}% plan · {movement.toFixed(1)} px max</span>
+              <span>{Math.round(safetyScale * 100)}% plan · {movement.toFixed(1)} px</span>
             </div>
           )}
 
           {status === "ready" && analysis && (
-            <div className="blueprint-card">
-              <div className="blueprint-heading"><strong>Geometric readout</strong><small>measured ratios, not a beauty score</small></div>
-              {[
-                ["Lower jaw", analysis.metrics.jawToFace * 100],
-                ["Nose width", analysis.metrics.noseToFace * 100],
-                ["Mouth width", analysis.metrics.mouthToFace * 100],
-                ["Lower third", analysis.metrics.lowerThird * 100],
-                ["Paired drift", analysis.metrics.pairedDeviation],
-              ].map(([label, value]) => (
-                <div className="metric-row" key={String(label)}><span>{label}</span><i><b style={{ width: `${Math.min(100, Number(value))}%` }} /></i><output>{Number(value).toFixed(1)}%</output></div>
-              ))}
-            </div>
+            <section className="intelligence-card" aria-label="Pose-aware facial analysis">
+              <div className="intelligence-heading">
+                <div><span className="step-number">03</span><div><strong>Face intelligence</strong><small>Structure map, never a beauty score</small></div></div>
+                <span className="pose-pill"><i />{pose.label} · {Math.round(pose.confidence * 100)}%</span>
+              </div>
+
+              <div className="analysis-stats">
+                <div><strong>{Math.round(counts.semanticLandmarkCount)}</strong><small>semantic anchors</small></div>
+                <div><strong>{Math.round(counts.measurementCount)}</strong><small>derived measures</small></div>
+                <div><strong>{Math.round(counts.validMeasurementCount)}</strong><small>valid for pose</small></div>
+              </div>
+
+              <div className="analysis-subheading"><strong>Region editability</strong><small>confidence × pose × expression</small></div>
+              <div className="editability-grid">
+                {editability.map((item) => (
+                  <div className={`editability-chip ${item.score < 0.55 ? "is-locked" : ""}`} key={item.region} title={item.reason}>
+                    <span>{item.region}</span>
+                    <i><b style={{ width: `${item.score * 100}%` }} /></i>
+                    <output>{item.score < 0.55 ? "LOCK" : `${Math.round(item.score * 100)}%`}</output>
+                  </div>
+                ))}
+              </div>
+
+              <div className="analysis-subheading plan-heading"><strong>Selected plan</strong><small>{activeDirectionLabels.join(" + ") || "No direction active"}</small></div>
+              <div className="plan-list">
+                {planActions.length ? planActions.map((action, index) => (
+                  <article key={`${action.region}-${index}`}>
+                    <span>{String(index + 1).padStart(2, "0")}</span>
+                    <div><strong>{action.region}</strong><small>{action.rationale}</small></div>
+                    {action.confidence !== undefined && <output>{Math.round(action.confidence * 100)}%</output>}
+                  </article>
+                )) : (
+                  <div className="identity-plan"><span>◇</span><p><strong>Preserve this geometry</strong><small>{rejected[0] || "No pose-valid deviation cleared the confidence and editability gates."}</small></p></div>
+                )}
+              </div>
+
+              {!!preserved.length && <p className="preserved-note"><strong>Preserved</strong> {preserved.join(" · ")}</p>}
+            </section>
           )}
 
           <div className="panel-actions">
             <button className="mesh-button" disabled={status !== "ready"} onClick={() => setShowMesh((value) => !value)} aria-pressed={showMesh}><span>⌘</span>{showMesh ? "Hide map" : "Show map"}</button>
-            <button className="export-button" disabled={status !== "ready"} onClick={download}>Export PNG <span>↓</span></button>
+            <button className="export-button" disabled={status !== "ready"} onClick={download}>Export exact PNG <span>↓</span></button>
           </div>
           {status === "ready" && <button className="start-over" onClick={reset}>Start over with a different photo</button>}
         </aside>
@@ -634,11 +913,11 @@ export default function Home() {
         <div className="principle-list">
           <article><span>01</span><div><h3>Your pixels stay yours</h3><p>The image is processed inside your browser. Nothing is sent to a server or retained.</p></div></article>
           <article><span>02</span><div><h3>Identity stays intact</h3><p>A bounded mesh moves existing pixels only. No new skin, hair, shadows or background.</p></div></article>
-          <article><span>03</span><div><h3>Guardrails by design</h3><p>A fixed face-boundary ring and triangle checks weaken any plan that would pinch, fold or disturb the background.</p></div></article>
+          <article><span>03</span><div><h3>Confidence before change</h3><p>Pose validity, expression, editability and mesh safety can weaken—or reject—each planned adjustment before pixels move.</p></div></article>
         </div>
       </section>
 
-      <footer><span>HARMONIA / V1</span><p>A creative photo-editing tool. Results are subjective—not a measure of your worth.</p><span>PRIVATE BY DEFAULT</span></footer>
+      <footer><span>HARMONIA / V2</span><p>A creative geometry tool. Results are subjective—not a score or measure of your worth.</p><span>PRIVATE BY DEFAULT</span></footer>
       <input ref={fileInputRef} className="visually-hidden" type="file" accept="image/jpeg,image/png,image/webp" onChange={onFileChange} />
     </main>
   );
