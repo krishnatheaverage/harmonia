@@ -3,8 +3,8 @@
 Public app: https://krishnatheaverage.github.io/harmonia/
 
 Harmonia is a private, browser-based portrait reshaping studio. It analyzes one
-clear face, proposes a conservative combination of Harmony, Symmetry, and
-Dimorphism directions, then moves only pixels already present in the source
+clear face, proposes an adaptive combination of Harmony, Symmetry, and
+Angularity directions, then moves only pixels already present in the source
 image. It does not generate or replace skin, hair, facial hair, shadows, color,
 backgrounds, or missing anatomy.
 
@@ -36,17 +36,25 @@ ratios is a universal ideal.
   whether it is a target, guardrail, context signal, or preservation signal.
 - Region editability combines pose, visibility, image quality, expression, mesh
   support, and distance from protected boundaries. Low-confidence regions lock
-  or receive a smaller, explicit displacement budget. Current hard ceilings are
-  2.4% of detected face width for jaw handles, 1.8% for chin/face-envelope
-  handles, 1.0% for nose/lips/symmetry, and 0.8% for brows.
-- Harmony, Symmetry, and Dimorphism are blended into one joint plan instead of
-  being applied as mutually exclusive filters.
+  or receive a smaller, explicit displacement budget. Current hard handle
+  ceilings are 4.5% for jaw, 3.5% for chin and face envelope, 2.2% for nose and
+  lips, 1.6% for brows, and 1.5% for symmetry alignment. A separate 4% whole-face
+  displacement limit bounds the final dense result.
+- Harmony, Symmetry, and Angularity are blended into one joint plan instead of
+  being applied as mutually exclusive filters. The default mix is `70 / 25 / 55`.
 - The visible global Strength control is the only user-facing final amplitude
-  multiplier: `0` is the unchanged source and `100` requests the full bounded
-  plan. Planner labels such as light, balanced, and full describe evidence; they
-  do not silently reduce the rendered edit.
+  control: it starts at `80`; `0` is the unchanged source; and `100` requests the
+  full bounded plan. The renderer maps normalized slider position `s` to
+  `s^2.5`, preserving useful high-end headroom before geometry validation.
+  Planner labels such as light, balanced, and full describe evidence; they do
+  not silently reduce the rendered edit.
+- Frontal and three-quarter controls use a pose-stable scale derived from the
+  larger of projected face width and `0.65 ×` visible face height. Profiles stay
+  on a more conservative projected-width path because hidden-side mesh vertices
+  can nearly overlap in 2D.
 - Deadbands, edit budgets, compatibility checks, and geometry validation allow
-  the planner to return a conservative no-op when an edit is not well supported.
+  a stronger supported edit while still returning a no-op when an edit is not
+  sufficiently supported.
 
 The 408-entry catalog contains 210 declared ratios; it is not 408 independent
 beauty rules. Only calibrated, pose-valid evidence families can create edit
@@ -82,16 +90,19 @@ symmetry is not treated as measurable from a profile.
    and editability scores.
 5. Create and rank a bounded joint plan from the three direction weights;
    preserve regions that are already coherent or uncertain.
-6. Smooth selected targets across the fixed face topology while holding a narrow
-   outer boundary ring fixed.
+6. Smooth selected targets across the fixed face topology while holding an
+   expanded outer boundary ring fixed at `1.18×` the face-oval radius in x and
+   `1.16×` in y.
 7. Validate each affected region against the geometry already accepted. If one
    region exceeds the strain budget, binary-search that region's strongest safe
    scale without shrinking unrelated regions that already passed.
 8. Treat triangle foldovers and image-bound violations as hard failures at every
-   strength. If a region has no safe non-zero scale, preserve its original
-   geometry.
-9. Replace the face region once; leave texture, lighting, color, and all pixels
-   outside the protected boundary unchanged.
+   strength. Non-degenerate triangles must remain within the accepted area,
+   edge, stretch, and condition-number ranges; near-degenerate projected sliver
+   groups share a stabilized displacement instead of vetoing the entire edit.
+9. If a region has no safe non-zero scale, preserve its original geometry.
+   Replace the accepted face region once; leave texture, lighting, color, and
+   every original pixel outside the fixed warp boundary unchanged.
 
 ## Privacy
 

@@ -128,7 +128,7 @@ export type PlannedAction = {
   amount: number;
   confidence: number;
   editability: number;
-  /** Maximum handle displacement as a fraction of detected face width. */
+  /** Maximum handle displacement as a fraction of the pose-aware control scale. */
   maxDisplacement: number;
   directions: Array<keyof DirectionMix>;
   rationale: string;
@@ -164,9 +164,9 @@ export type SemanticLandmarkDefinition = {
 };
 
 export const DEFAULT_DIRECTION_MIX: DirectionMix = {
-  harmony: 60,
-  symmetry: 35,
-  dimorphism: 30,
+  harmony: 70,
+  symmetry: 25,
+  dimorphism: 55,
 };
 
 const clamp = (value: number, min = 0, max = 1) => Math.max(min, Math.min(max, value));
@@ -841,13 +841,13 @@ function buildRegionEditability(
         ? { Jaw: 0.64, Chin: 0.78, Nose: 0.68, Lips: 0.62, Brows: 0.38, "Face shape": 0.54, Symmetry: 0 }
         : { Jaw: 0, Chin: 0, Nose: 0, Lips: 0, Brows: 0, "Face shape": 0, Symmetry: 0 };
   const displacementCeilings: Record<FaceRegion, number> = {
-    Jaw: 0.024,
-    Chin: 0.018,
-    Nose: 0.01,
-    Lips: 0.01,
-    Brows: 0.008,
-    "Face shape": 0.018,
-    Symmetry: 0.01,
+    Jaw: 0.045,
+    Chin: 0.035,
+    Nose: 0.022,
+    Lips: 0.022,
+    Brows: 0.016,
+    "Face shape": 0.035,
+    Symmetry: 0.015,
   };
   return (Object.entries(bases) as Array<[FaceRegion, number]>).map(([region, base]) => {
     const expressionFactor = expression.blockedRegions.includes(region) ? 0.32 : region === "Lips" ? expressionConfidenceForRegion("mouth", expression) : region === "Brows" ? expressionConfidenceForRegion("brow", expression) : expression.confidence;
@@ -1251,7 +1251,18 @@ export function createMorphPlan(analysis: FaceAnalysis, requestedMix: DirectionM
         ? Math.sign(existing.amount) * (
             1 - (1 - Math.abs(existing.amount)) * (1 - Math.abs(weightedAmount))
           )
-        : existing.amount + weightedAmount;
+        : (() => {
+            const dominant = Math.abs(existing.amount) >= Math.abs(weightedAmount)
+              ? existing.amount
+              : weightedAmount;
+            const opposing = dominant === existing.amount ? weightedAmount : existing.amount;
+            // Two valid style directions can disagree without making the
+            // entire region disappear. Preserve a coherent dominant vector,
+            // while still allowing the opposing direction to soften it.
+            const residual = Math.abs(dominant) - Math.abs(opposing) * 0.35;
+            const dominantFloor = Math.abs(dominant) * 0.7;
+            return Math.sign(dominant) * Math.max(residual, dominantFloor);
+          })();
       existing.amount = clamp(existing.amount, -0.9, 0.9);
       existing.confidence = Math.min(existing.confidence, confidence);
       existing.editability = Math.min(existing.editability, score);

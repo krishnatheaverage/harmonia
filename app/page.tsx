@@ -4,6 +4,7 @@ import { ChangeEvent, CSSProperties, DragEvent, useCallback, useEffect, useRef, 
 import {
   analyzeFace,
   createMorphPlan,
+  DEFAULT_DIRECTION_MIX,
   detectFace,
   drawLandmarkOverlay,
   morphImage,
@@ -59,16 +60,10 @@ const DIRECTION_OPTIONS: Array<{
   {
     id: "dimorphism",
     number: "03",
-    label: "Dimorphism",
-    description: "Adds restrained angular definition within your existing anatomy.",
+    label: "Angularity",
+    description: "Strengthens jaw, chin and brow definition within your existing structure.",
   },
 ];
-
-const DEFAULT_DIRECTION_MIX: DirectionMix = {
-  harmony: 60,
-  symmetry: 35,
-  dimorphism: 30,
-};
 
 const STABILITY_LANDMARKS = [10, 152, 234, 454, 33, 263, 1, 61, 291, 172, 397];
 
@@ -449,7 +444,7 @@ export default function Home() {
   const [error, setError] = useState("");
   const [fileName, setFileName] = useState("");
   const [directionMix, setDirectionMix] = useState<DirectionMix>(DEFAULT_DIRECTION_MIX);
-  const [strength, setStrength] = useState(50);
+  const [strength, setStrength] = useState(80);
   const [showOriginal, setShowOriginal] = useState(false);
   const [showMesh, setShowMesh] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -802,7 +797,7 @@ export default function Home() {
       <section className="hero" id="top">
         <div className="eyebrow"><span>PIXEL-ONLY MORPHING</span><span className="eyebrow-line" /></div>
         <h1>Scan. Measure.<br /><em>Harmonize.</em></h1>
-        <p className="hero-copy">Your face is mapped as dense geometry. Harmony, symmetry and dimorphism edits adapt to your existing structure, then move only original pixels.</p>
+        <p className="hero-copy">Harmony, Symmetry and Angularity are blended into one personalized plan that reshapes your source pixels only.</p>
       </section>
 
       <section className={`studio ${status === "ready" ? "studio-active" : ""}`} aria-label="Portrait editor">
@@ -862,7 +857,7 @@ export default function Home() {
             <div><span className="step-number">01</span><h2>Blend directions</h2></div>
             {status === "ready" && <span className="ready-badge">V2 map ready</span>}
           </div>
-          <p className="mode-intro">These are simultaneous signals, not separate filters. The planner weighs them together against your pose, confidence and editable regions.</p>
+          <p className="mode-intro">Blend all three signals into one personalized morph. The planner adapts their impact to your pose, facial structure, confidence and editable regions.</p>
           <div className="direction-stack">
             {DIRECTION_OPTIONS.map((option) => (
               <article className={`direction-control direction-${option.id}`} key={option.id}>
@@ -886,12 +881,12 @@ export default function Home() {
           </div>
           <div className="blend-note">
             <span className="blend-orbit" aria-hidden="true"><i /><i /><i /></span>
-            <p><strong>One coordinated plan</strong><small>Invalid signals are quietly downweighted for the detected angle.</small></p>
+            <p><strong>One personalized plan</strong><small>Unsupported signals are downweighted for your detected angle.</small></p>
           </div>
 
           <div className="divider" />
           <div className="strength-row">
-            <div><span className="step-number">02</span><h3>Global strength</h3></div>
+            <div><span className="step-number">02</span><h3>Adaptive strength</h3></div>
             <output>{strength}%</output>
           </div>
           <input
@@ -902,9 +897,10 @@ export default function Home() {
             max="100"
             value={strength}
             onChange={(event) => setStrength(Number(event.target.value))}
-            aria-label="Global edit strength"
+            aria-label="Adaptive edit strength"
           />
-          <div className="range-labels"><span>Subtle</span><span>Maximum safe</span></div>
+          <div className="range-labels"><span>Subtle</span><span>High impact</span></div>
+          <p className="impact-note"><strong>High settings broaden supported changes.</strong> Foldover, feature-crossing and outer-boundary guardrails stay hard.</p>
 
           {status === "ready" && (
             <div className={`safety-card ${!hasPlannedEdit ? "is-no-plan" : `is-${safetyStatus}`}`}>
@@ -987,7 +983,7 @@ export default function Home() {
         <div className="principle-list">
           <article><span>01</span><div><h3>Your pixels stay yours</h3><p>The image is processed inside your browser. Nothing is sent to a server or retained.</p></div></article>
           <article><span>02</span><div><h3>Identity stays intact</h3><p>A bounded mesh moves existing pixels only. No new skin, hair, shadows or background.</p></div></article>
-          <article><span>03</span><div><h3>Confidence before change</h3><p>Pose validity, expression, editability and mesh safety can weaken—or reject—each planned adjustment before pixels move.</p></div></article>
+          <article><span>03</span><div><h3>Personalized, then protected</h3><p>Every adjustment responds to your own structure. Pose validity, editability and mesh safety can still weaken—or reject—a change before pixels move.</p></div></article>
         </div>
       </section>
 

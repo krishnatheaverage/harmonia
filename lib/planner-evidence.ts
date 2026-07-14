@@ -79,7 +79,7 @@ export const PLANNER_RULES: PlannerRuleDefinition[] = [
     ],
     minimumIndependentGroups: 2,
     primitiveEffectSign: 1,
-    maxInfluence: 0.72,
+    maxInfluence: 0.82,
     guardrailRegions: ["jaw", "chin", "outline"],
   },
   {
@@ -96,7 +96,7 @@ export const PLANNER_RULES: PlannerRuleDefinition[] = [
     ],
     minimumIndependentGroups: 2,
     primitiveEffectSign: 1,
-    maxInfluence: 0.58,
+    maxInfluence: 0.7,
     guardrailRegions: ["chin", "jaw", "frame"],
   },
   {
@@ -114,7 +114,7 @@ export const PLANNER_RULES: PlannerRuleDefinition[] = [
     ],
     minimumIndependentGroups: 2,
     primitiveEffectSign: -1,
-    maxInfluence: 0.56,
+    maxInfluence: 0.68,
     guardrailRegions: ["nose", "profile"],
   },
   {
@@ -132,7 +132,7 @@ export const PLANNER_RULES: PlannerRuleDefinition[] = [
     ],
     minimumIndependentGroups: 2,
     primitiveEffectSign: 1,
-    maxInfluence: 0.38,
+    maxInfluence: 0.5,
     guardrailRegions: ["mouth", "nose"],
   },
   {
@@ -152,7 +152,7 @@ export const PLANNER_RULES: PlannerRuleDefinition[] = [
     ],
     minimumIndependentGroups: 2,
     primitiveEffectSign: 1,
-    maxInfluence: 0.28,
+    maxInfluence: 0.38,
     guardrailRegions: ["brow", "eye"],
   },
 ];
@@ -354,7 +354,7 @@ const FRONTAL_DIMORPHISM_FAMILIES: StructuralFamily[] = [
       "shape.curvature.jaw.right", "shape.curvature.jaw.left",
       "distance.side.upper_jaw.right", "distance.side.upper_jaw.left",
     ],
-    maxInfluence: 0.42,
+    maxInfluence: 0.62,
   },
   {
     id: "dimorphism.chin-structure",
@@ -366,7 +366,7 @@ const FRONTAL_DIMORPHISM_FAMILIES: StructuralFamily[] = [
       "angle.prechin.right", "angle.prechin.left",
       "distance.midline.lower_lip_chin",
     ],
-    maxInfluence: 0.2,
+    maxInfluence: 0.3,
   },
   {
     id: "dimorphism.brow-structure",
@@ -378,7 +378,7 @@ const FRONTAL_DIMORPHISM_FAMILIES: StructuralFamily[] = [
       "angle.orbital_brow.right", "angle.orbital_brow.left",
       "shape.curvature.brow.right", "shape.curvature.brow.left",
     ],
-    maxInfluence: 0.18,
+    maxInfluence: 0.25,
   },
 ];
 
@@ -393,7 +393,7 @@ const PROFILE_DIMORPHISM_FAMILIES: StructuralFamily[] = [
       "distance.profile.glabella_chin", "distance.profile.bridge_chin",
       "angle.profile_convexity.right", "angle.profile_convexity.left",
     ],
-    maxInfluence: 0.36,
+    maxInfluence: 0.55,
   },
   {
     id: "dimorphism.profile-chin-silhouette",
@@ -404,7 +404,7 @@ const PROFILE_DIMORPHISM_FAMILIES: StructuralFamily[] = [
       "distance.profile.lower_lip_chin", "distance.profile.tip_chin",
       "distance.profile.nasion_chin", "distance.profile.bridge_chin",
     ],
-    maxInfluence: 0.18,
+    maxInfluence: 0.28,
   },
 ];
 

@@ -34,8 +34,10 @@ test("renders the V2 blended Harmonia studio", async () => {
   assert.match(html, /Blend directions/);
   assert.match(html, /Harmony direction weight/);
   assert.match(html, /Symmetry direction weight/);
-  assert.match(html, /Dimorphism direction weight/);
-  assert.match(html, /One coordinated plan/);
+  assert.match(html, /Angularity direction weight/);
+  assert.match(html, /One personalized plan/);
+  assert.match(html, /Adaptive strength/);
+  assert.match(html, /High impact/);
   assert.match(html, /Start camera/);
   assert.match(html, /Export exact PNG/);
   assert.match(html, /Never uploaded/);

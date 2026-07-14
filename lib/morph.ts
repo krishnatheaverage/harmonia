@@ -183,26 +183,40 @@ function buildControls(
     Math.abs(frame.local(152).v - frame.local(10).v),
     1,
   );
+  const isProfilePlan = (
+    plan.evidenceFamilies?.some((family) => family.id.includes(".profile-")) ?? false
+  ) || faceWidth / Math.max(faceHeight * 0.65, 1) < 0.62;
   // Candidate labels describe planner certainty; they are not another hidden
   // strength control. Geometry backoff below is the only post-plan attenuator.
-  const scale = Math.min(faceWidth, faceHeight) * 0.1 * strength;
+  // Compile the full bounded plan at a useful photographic scale. Regional
+  // caps and geometry validation remain the hard limits; this coefficient only
+  // prevents well-supported actions from dying as sub-pixel motion.
+  // Cheek width collapses naturally as a face turns. Retain a fraction of
+  // face height so a supported profile does not silently receive half-sized
+  // caps and falloff radii.
+  const faceScale = Math.max(faceWidth, faceHeight * 0.65);
+  // Full-profile topology contains predicted hidden-side vertices that nearly
+  // overlap in 2D. Keep that narrower silhouette on the proven projected-width
+  // path; frontal and three-quarter plans use the pose-stable scale.
+  const controlScale = isProfilePlan ? faceWidth : faceScale;
+  const scale = controlScale * (isProfilePlan ? 0.12 : 0.18) * strength;
   const fallbackCaps: Record<string, number> = {
-    Jaw: 0.024,
-    Chin: 0.018,
-    Nose: 0.01,
-    Lips: 0.01,
-    Brows: 0.008,
-    Symmetry: 0.01,
+    Jaw: 0.045,
+    Chin: 0.035,
+    Nose: 0.022,
+    Lips: 0.022,
+    Brows: 0.016,
+    Symmetry: 0.015,
   };
   const actionFor = (primitive: string) => plan.actions.find((action) => action.primitive === primitive);
-  const actionAmount = (primitive: string) => actionFor(primitive)?.amount ?? 0;
+  const actionAmount = (primitive: string) => clamp(actionFor(primitive)?.amount ?? 0, -0.9, 0.9);
   const movementLimitFor = (region: string) => {
     const action = plan.actions.find((candidate) => candidate.region === region);
     const plannedCap = action && "maxDisplacement" in action
       ? Number(action.maxDisplacement)
       : Number.NaN;
     const cap = Number.isFinite(plannedCap) ? plannedCap : (fallbackCaps[region] ?? 0.01);
-    return faceWidth * clamp(cap, 0.004, fallbackCaps[region] ?? 0.024);
+    return controlScale * clamp(cap, 0.004, fallbackCaps[region] ?? 0.024);
   };
   const jawFactor = actionAmount("jaw-width");
   const chinFactor = actionAmount("chin-length");
@@ -254,42 +268,44 @@ function buildControls(
   const profileLike = yawSignal > 0.42;
   const useVisualLeft = !profileLike || leftSpan >= rightSpan;
   const useVisualRight = !profileLike || rightSpan >= leftSpan;
+  const jawRadius = controlScale * (isProfilePlan ? 0.075 : 0.14);
   if (useVisualLeft) visualLeftJaw.forEach((index, order) =>
-    addLocal(index, -jaw * jawWeights[order], 0, faceWidth * 0.075, "Jaw"),
+    addLocal(index, -jaw * jawWeights[order], 0, jawRadius, "Jaw"),
   );
   if (useVisualRight) visualRightJaw.forEach((index, order) =>
-    addLocal(index, jaw * jawWeights[order], 0, faceWidth * 0.075, "Jaw"),
+    addLocal(index, jaw * jawWeights[order], 0, jawRadius, "Jaw"),
   );
 
   const chin = chinFactor * scale;
-  addLocal(152, 0, chin * 0.7, faceWidth * 0.07, "Chin");
-  addLocal(148, 0, chin * 0.28, faceWidth * 0.065, "Chin");
-  addLocal(377, 0, chin * 0.28, faceWidth * 0.065, "Chin");
+  const chinRadius = controlScale * (isProfilePlan ? 0.07 : 0.12);
+  addLocal(152, 0, chin * 0.7, chinRadius, "Chin");
+  addLocal(148, 0, chin * 0.28, chinRadius * 0.92, "Chin");
+  addLocal(377, 0, chin * 0.28, chinRadius * 0.92, "Chin");
 
   const nose = noseFactor * scale;
   // Pose support is decided by the planner. If a front/three-quarter Nose
   // action exists, compile it even when a separate 2D span heuristic looks
   // profile-like. A wider field avoids concentrating strain in alar slivers.
   if (useVisualLeft) {
-    [98, 97, 64, 49].forEach((index, order) => addLocal(index, nose * (0.55 - order * 0.045), 0, faceWidth * 0.065, "Nose"));
+    [98, 97, 64, 49].forEach((index, order) => addLocal(index, nose * (0.55 - order * 0.045), 0, faceScale * 0.09, "Nose"));
   }
   if (useVisualRight) {
-    [327, 326, 294, 279].forEach((index, order) => addLocal(index, -nose * (0.55 - order * 0.045), 0, faceWidth * 0.065, "Nose"));
+    [327, 326, 294, 279].forEach((index, order) => addLocal(index, -nose * (0.55 - order * 0.045), 0, faceScale * 0.09, "Nose"));
   }
 
   const lipDelta = lipFactor * scale;
   if (Math.abs(lipDelta) > 0.001) {
-    [61, 78, 185, 146].forEach((index) => addLocal(index, -lipDelta * 0.35, 0, faceWidth * 0.046, "Lips"));
-    [291, 308, 409, 375].forEach((index) => addLocal(index, lipDelta * 0.35, 0, faceWidth * 0.046, "Lips"));
+    [61, 78, 185, 146].forEach((index) => addLocal(index, -lipDelta * 0.35, 0, faceScale * 0.075, "Lips"));
+    [291, 308, 409, 375].forEach((index) => addLocal(index, lipDelta * 0.35, 0, faceScale * 0.075, "Lips"));
   }
 
   const brow = browFactor * scale;
   const browWeights = [0.7, 0.9, 1, 0.78, 0.5];
   if (useVisualLeft) [70, 63, 105, 66, 107].forEach((index, order) =>
-    addLocal(index, 0, -brow * 0.45 * browWeights[order], faceWidth * 0.045, "Brows"),
+    addLocal(index, 0, -brow * 0.45 * browWeights[order], faceScale * 0.075, "Brows"),
   );
   if (useVisualRight) [300, 293, 334, 296, 336].forEach((index, order) =>
-    addLocal(index, 0, -brow * 0.45 * browWeights[order], faceWidth * 0.045, "Brows"),
+    addLocal(index, 0, -brow * 0.45 * browWeights[order], faceScale * 0.075, "Brows"),
   );
 
   const poseFade = clamp((0.3 - yawSignal) / 0.22, 0, 1);
@@ -302,8 +318,8 @@ function buildControls(
     const difference = right.v - left.v;
     if (Math.abs(difference) <= deadband) continue;
     const correction = (Math.abs(difference) - deadband) * Math.sign(difference) * symmetry * 0.5;
-    addLocal(li, 0, correction, faceWidth * 0.052, "Symmetry");
-    addLocal(ri, 0, -correction, faceWidth * 0.052, "Symmetry");
+    addLocal(li, 0, correction, faceScale * 0.08, "Symmetry");
+    addLocal(ri, 0, -correction, faceScale * 0.08, "Symmetry");
   }
 
   const applyCenteredGroup = (indices: number[], groupCenterU: number, amount: number, radius: number) => {
@@ -317,19 +333,19 @@ function buildControls(
     lipLandmarks,
     (frame.local(61).u + frame.local(291).u) / 2,
     symmetry * 0.6,
-    faceWidth * 0.035,
+    faceScale * 0.06,
   );
   applyCenteredGroup(
     [1, 2, 49, 279, 98, 327],
     frame.local(1).u,
     symmetry * 0.42,
-    faceWidth * 0.04,
+    faceScale * 0.065,
   );
   applyCenteredGroup(
     [152, 148, 377],
     frame.local(152).u,
     symmetry * 0.36,
-    faceWidth * 0.055,
+    faceScale * 0.08,
   );
 
   return controls.filter((control) => Math.hypot(control.dx, control.dy) > 0.01);
@@ -555,8 +571,8 @@ function buildFaceMesh(
   const boundary: Point[] = [];
   for (const ovalPoint of oval) {
     const anchor = {
-      x: clamp(center.x + (ovalPoint.x - center.x) * 1.065, 0, width),
-      y: clamp(center.y + (ovalPoint.y - center.y) * 1.055, 0, height),
+      x: clamp(center.x + (ovalPoint.x - center.x) * 1.18, 0, width),
+      y: clamp(center.y + (ovalPoint.y - center.y) * 1.16, 0, height),
     };
     boundary.push(anchor);
     points.push(anchor);
@@ -616,6 +632,61 @@ function regularizeDisplacements(displacements: Point[], mesh: MeshData) {
   return current;
 }
 
+function stabilizeProjectedSlivers(displacements: Point[], mesh: MeshData) {
+  const parent = Array.from({ length: mesh.facePointCount }, (_, index) => index);
+  const involved = new Set<number>();
+  const find = (index: number): number => {
+    if (parent[index] !== index) parent[index] = find(parent[index]);
+    return parent[index];
+  };
+  const join = (a: number, b: number) => {
+    const rootA = find(a);
+    const rootB = find(b);
+    if (rootA !== rootB) parent[rootB] = rootA;
+  };
+
+  for (const [a, b, c] of mesh.triangles) {
+    if (a >= mesh.facePointCount || b >= mesh.facePointCount || c >= mesh.facePointCount) continue;
+    const points = [mesh.points[a], mesh.points[b], mesh.points[c]];
+    const maximumEdge = Math.max(
+      Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y),
+      Math.hypot(points[1].x - points[2].x, points[1].y - points[2].y),
+      Math.hypot(points[2].x - points[0].x, points[2].y - points[0].y),
+      0.001,
+    );
+    const projectedQuality = Math.abs(signedArea(points[0], points[1], points[2])) /
+      (maximumEdge * maximumEdge);
+    if (projectedQuality < 0.012) {
+      join(a, b);
+      join(a, c);
+      involved.add(a);
+      involved.add(b);
+      involved.add(c);
+    }
+  }
+
+  const groups = new Map<number, number[]>();
+  for (const index of involved) {
+    const root = find(index);
+    const group = groups.get(root) ?? [];
+    group.push(index);
+    groups.set(root, group);
+  }
+  const stabilized = displacements.map((point) => ({ ...point }));
+  for (const indices of groups.values()) {
+    if (indices.length < 2) continue;
+    const average = indices.reduce(
+      (sum, index) => ({
+        x: sum.x + displacements[index].x / indices.length,
+        y: sum.y + displacements[index].y / indices.length,
+      }),
+      { x: 0, y: 0 },
+    );
+    for (const index of indices) stabilized[index] = average;
+  }
+  return stabilized;
+}
+
 function planIsSafe(
   source: Point[],
   target: Point[],
@@ -647,19 +718,20 @@ function planIsSafe(
     const normalizedArea = Math.abs(sourceArea) / Math.max(width * height, 1);
     const normalizedMinimumEdge = Math.min(...sourceEdges) / Math.max(minimumImageDimension, 1);
     if (normalizedArea < 0.000001 || normalizedMinimumEdge < 0.0015) {
-      const differentialLimit = clamp(minimumImageDimension * 0.0012, 0.2, 1.5);
-      return [[a, b], [b, c], [c, a]].every(([start, end]) => {
+      const differentialLimit = clamp(minimumImageDimension * 0.0024, 0.35, 2.8);
+      const safe = [[a, b], [b, c], [c, a]].every(([start, end]) => {
         const startDx = target[start].x - source[start].x;
         const startDy = target[start].y - source[start].y;
         const endDx = target[end].x - source[end].x;
         const endDy = target[end].y - source[end].y;
         return Math.hypot(startDx - endDx, startDy - endDy) <= differentialLimit;
       });
+      return safe;
     }
-    if (areaRatio < 0.68 || areaRatio > 1.42) return false;
+    if (areaRatio < 0.54 || areaRatio > 1.68) return false;
     const edgesSafe = [[a, b], [b, c], [c, a]].every(([start, end]) => {
       const ratio = edgeRatio(start, end);
-      return ratio > 0.78 && ratio < 1.28;
+      return ratio > 0.68 && ratio < 1.45;
     });
     if (!edgesSafe) return false;
 
@@ -686,9 +758,9 @@ function planIsSafe(
       Math.max(0, (frobeniusSquared - discriminant) / 2),
     );
     return (
-      minimumStretch > 0.74 &&
-      maximumStretch < 1.32 &&
-      maximumStretch / Math.max(minimumStretch, 0.001) < 1.5
+      minimumStretch >= 0.68 &&
+      maximumStretch < 1.48 &&
+      maximumStretch / Math.max(minimumStretch, 0.001) < 1.8
     );
   });
 }
@@ -706,7 +778,11 @@ export function morphImage(
   const ctx = output.getContext("2d", { alpha: false });
   if (!ctx) throw new Error("Canvas rendering is unavailable in this browser.");
 
-  const strength = Math.max(0, Math.min(1, strengthPercent / 100));
+  const requestedStrength = Math.max(0, Math.min(1, strengthPercent / 100));
+  // Reserve meaningful headroom for the high end of the visible control. A
+  // clean 100% request remains the complete plan, while middle values stay
+  // clearly distinct instead of hitting the same guardrail plateau early.
+  const strength = requestedStrength === 0 ? 0 : requestedStrength ** 2.5;
   if (strength === 0) {
     ctx.drawImage(sourceCanvas, 0, 0);
     return {
@@ -722,6 +798,17 @@ export function morphImage(
 
   const controls = buildControls(landmarks, width, height, plan, strength);
   const mesh = buildFaceMesh(sourceCanvas, landmarks);
+  const frame = createPoseFrame(landmarks, width, height);
+  const projectedFaceWidth = Math.max(
+    Math.abs(frame.local(454).u - frame.local(234).u),
+    1,
+  );
+  const projectedFaceHeight = Math.max(
+    Math.abs(frame.local(152).v - frame.local(10).v),
+    1,
+  );
+  const faceScale = Math.max(projectedFaceWidth, projectedFaceHeight * 0.65);
+  const wholeFaceMovementLimit = faceScale * 0.04;
   const controlsByRegion = new Map<string, Control[]>();
   for (const control of controls) {
     const regionControls = controlsByRegion.get(control.region) ?? [];
@@ -732,7 +819,6 @@ export function morphImage(
     ...plan.actions.map((action) => action.region),
     ...controlsByRegion.keys(),
   ])];
-  const totalDisplacements = mesh.points.map(() => ({ x: 0, y: 0 }));
   let targetPoints = mesh.points.map((point) => ({ ...point }));
   const perRegionScale: Record<string, number> = {};
   const movedRegions: string[] = [];
@@ -751,7 +837,12 @@ export function morphImage(
         ? fieldDisplacement(point, regionControls)
         : { x: 0, y: 0 },
     );
-    const displacements = regularizeDisplacements(rawDisplacements, mesh);
+    // In a clean profile, many canonical 3D neighbors project almost on top of
+    // one another. Regularize the image-space field, then force connected
+    // projected slivers to share motion so those near-coincident vertices
+    // cannot pull in different directions and fold over.
+    const smoothedDisplacements = regularizeDisplacements(rawDisplacements, mesh);
+    const displacements = stabilizeProjectedSlivers(smoothedDisplacements, mesh);
     const regionWeight = Math.max(
       ...displacements.map((point) => Math.hypot(point.x, point.y)),
       0,
@@ -770,12 +861,25 @@ export function morphImage(
     // Planned primitives are contractually bounded to ±0.9. Preserve a safe,
     // visible portion of malformed or future oversized requests instead of
     // trusting the control clamp and reporting a false pass.
-    const contractScale = actionPeak > 0.9 ? 0.9 / actionPeak : 1;
+    const contractScale = actionPeak > 0.9 ? 0.98 : 1;
     let regionScale = contractScale;
-    const candidateFor = (scaleAmount: number) => targetPoints.map((point, index) => ({
-      x: point.x + displacements[index].x * scaleAmount,
-      y: point.y + displacements[index].y * scaleAmount,
-    }));
+    const candidateFor = (scaleAmount: number) => targetPoints.map((point, index) => {
+      const candidate = {
+        x: point.x + displacements[index].x * scaleAmount,
+        y: point.y + displacements[index].y * scaleAmount,
+      };
+      if (index >= mesh.facePointCount) return candidate;
+      const source = mesh.points[index];
+      const dx = candidate.x - source.x;
+      const dy = candidate.y - source.y;
+      const magnitude = Math.hypot(dx, dy);
+      if (magnitude <= wholeFaceMovementLimit) return candidate;
+      const boundedScale = wholeFaceMovementLimit / Math.max(magnitude, 0.001);
+      return {
+        x: source.x + dx * boundedScale,
+        y: source.y + dy * boundedScale,
+      };
+    });
     if (!planIsSafe(mesh.points, candidateFor(regionScale), mesh.triangles, width, height)) {
       let safeScale = 0;
       let unsafeScale = regionScale;
@@ -796,16 +900,15 @@ export function morphImage(
     if (regionScale < 0.995) anyBackoff = true;
     if (regionScale === 0) continue;
     targetPoints = candidateFor(regionScale);
-    displacements.forEach((point, index) => {
-      totalDisplacements[index].x += point.x * regionScale;
-      totalDisplacements[index].y += point.y * regionScale;
-    });
     movedRegions.push(region);
   }
 
   const safetyScale = weightTotal > 0 ? weightedScale / weightTotal : 0;
   const maxMovementPx = Math.max(
-    ...totalDisplacements.map((point) => Math.hypot(point.x, point.y)),
+    ...targetPoints.map((point, index) => Math.hypot(
+      point.x - mesh.points[index].x,
+      point.y - mesh.points[index].y,
+    )),
     0,
   );
 

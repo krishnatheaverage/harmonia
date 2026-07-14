@@ -15,7 +15,7 @@ not justify more edits: uncertainty, poor visibility, conflicting directions, or
 an already coherent face must be able to produce a no-op.
 
 The engine is a photographic geometry tool, not a medical, biometric, or
-psychological assessment. Its Harmony, Symmetry, and Dimorphism controls are
+psychological assessment. Its Harmony, Symmetry, and Angularity controls are
 editing directions, not objective measures of attractiveness, sex, gender,
 health, ethnicity, or character. They must never be exposed as a person score.
 
@@ -185,7 +185,7 @@ measurement carries its own validity rather than inheriting pose class alone.
 | Mouth/lip vertical relations | yes | yes, expression-gated | visible contour only |
 | Jaw width | yes | pose-normalized and bounded | no |
 | Jaw/chin silhouette | yes | visible-side weighted | yes, visible side |
-| Dimorphism direction | bounded | bounded and visibility-gated | silhouette-only subset |
+| Angularity direction | bounded | bounded and visibility-gated | silhouette-only subset |
 
 Profile support is intentionally narrower than frontal support. In particular,
 the planner must not interpret projective foreshortening as facial asymmetry or
@@ -239,7 +239,7 @@ type RegionEditability = {
   region: FaceRegion;
   score: number; // [0, 1]
   allowedAxes: readonly ("u" | "v" | "normal")[];
-  maxDisplacement: number; // fraction of local face width
+  maxDisplacement: number; // fraction of pose-aware control scale
   locked: boolean;
   reasons: readonly string[];
 };
@@ -253,21 +253,27 @@ hairline/ears, creating profile depth not present in the photo, or changing a
 hidden side—are locked regardless of requested direction strength.
 
 `maxDisplacement` is an auditable per-region handle cap expressed as a fraction
-of detected face width. Capture quality and local editability may reduce it, but
-the planner and renderer may never raise it above these V2 ceilings:
+of the renderer's pose-aware control scale. Frontal and moderate three-quarter
+plans use `max(projected face width, 0.65 × visible face height)` so yaw does not
+silently collapse an otherwise supported edit. Profiles use projected face
+width and a smaller base coefficient because predicted hidden-side vertices can
+nearly overlap in 2D. Capture quality and local editability may reduce a cap,
+but the planner and renderer may never raise it above these V2 ceilings:
 
 | Region | Maximum handle displacement |
 |---|---:|
-| Jaw | 2.4% of face width |
-| Chin | 1.8% of face width |
-| Face shape / envelope | 1.8% of face width |
-| Nose | 1.0% of face width |
-| Lips | 1.0% of face width |
-| Symmetry alignment | 1.0% of face width |
-| Brows | 0.8% of face width |
+| Jaw | 4.5% of control scale |
+| Chin | 3.5% of control scale |
+| Face shape / envelope | 3.5% of control scale |
+| Nose | 2.2% of control scale |
+| Lips | 2.2% of control scale |
+| Symmetry alignment | 1.5% of control scale |
+| Brows | 1.6% of control scale |
 
 These are motion ceilings, not targets. A plan can request less, and an
-ineligible region remains locked even when global Strength is `100`.
+ineligible region remains locked even when global Strength is `100`. After
+regional controls are blended and regularized, no final landmark may move more
+than `4%` of the pose-stable face scale from its source position.
 
 ## 8. Harmony rules
 
@@ -342,19 +348,26 @@ normalized displacement, fixed/protected neighbors, and incompatibilities.
 
 Primitives do not paint, inpaint, clone, relight, sharpen, or synthesize depth.
 The renderer converts a selected primitive to dense-mesh displacement, applies
-neighborhood smoothing with a fixed outer ring, rasterizes the original source
-triangles, and validates orientation, area, stretch, shear, and bounds.
+neighborhood smoothing, and holds a fixed boundary ring at `1.18×` the
+face-oval radius in x and `1.16×` in y. It then rasterizes the original source
+triangles and validates orientation, area, stretch, shear, and bounds. The
+boundary anchors have zero displacement, so original pixels outside the warp
+boundary—including the background—remain unchanged.
 
 ## 10. Joint planner
 
 `DEFAULT_DIRECTION_MIX` initializes three independent weights. The UI exposes all
 three at once; selecting one never discards the other two.
 
+The shipped mix is Harmony `70`, Symmetry `25`, and Angularity `55`. The third
+value retains the internal `dimorphism` schema key for backward compatibility;
+it is presented to the user as Angularity and is not a sex or gender inference.
+
 ```ts
 type DirectionMix = {
-  harmony: number;    // [0, 1]
-  symmetry: number;   // [0, 1]
-  dimorphism: number; // [0, 1]
+  harmony: number;    // [0, 100]
+  symmetry: number;   // [0, 100]
+  dimorphism: number; // [0, 100], user-facing label: Angularity
 };
 
 type PlannedEdit = {
@@ -426,24 +439,38 @@ make invalid evidence valid.
 
 ### Strength and geometry-backoff contract
 
-The UI exposes global Strength directly on a `0–100` scale. `0` must render the
-unchanged source. `100` requests the complete already-bounded plan. Intermediate
-values interpolate linearly before geometry validation. There is no additional
-candidate-tier, confidence-tier, or mode-specific multiplier in the renderer;
-all evidence weighting is already represented in the planned actions.
+The UI exposes global Strength directly on a `0–100` scale and initializes it to
+`80`. `0` must render the unchanged source. `100` requests the complete
+already-bounded plan. For normalized slider position `s`, the renderer applies
+`s^2.5` before geometry validation. This deliberate high-end response curve
+keeps medium settings visibly distinct from a full request instead of reaching
+the same guardrail plateau early. There is no additional candidate-tier,
+confidence-tier, or mode-specific multiplier in the renderer; all evidence
+weighting is already represented in the planned actions.
 
-Geometry validation is the only post-plan attenuator. It evaluates one region at
-a time against the safe geometry already accepted, then binary-searches only an
-unsafe region toward zero. A nose constraint therefore cannot silently shrink a
-jaw edit that already passed. The result reports both the requested Strength and
-the applied per-region scales so geometric backoff is visible rather than hidden.
+After the requested Strength has been mapped through the visible response curve,
+geometry validation is the only adaptive safety backoff. It evaluates one region
+at a time against the safe geometry already accepted, then binary-searches only
+an unsafe region toward zero. A nose constraint therefore cannot silently shrink
+a jaw edit that already passed. The result reports both the requested Strength
+and the applied per-region scales so geometric backoff is visible rather than
+hidden.
 
 Triangle orientation and output image bounds remain hard constraints: a
 foldover, orientation reversal, or target outside the image always fails,
-regardless of requested Strength. Area, edge-length, stretch, and shear checks
-bound meaningful mesh triangles; numerically tiny mesh slivers cannot veto an
-otherwise safe entire-face plan. If no non-zero regional scale satisfies the
-hard constraints, that region is rendered as identity.
+regardless of requested Strength. For non-degenerate triangles, target/source
+area ratio must remain in `[0.54, 1.68]`; each meaningful edge ratio must remain
+strictly inside `(0.68, 1.45)`; singular stretches must stay at least `0.68` and
+below `1.48`; and the local condition number must remain below `1.8`.
+Numerically tiny triangles use a bounded differential-displacement check instead:
+the threshold is `clamp(0.0024 × min(image width, image height), 0.35 px, 2.8 px)`.
+Projected sliver groups with quality below `0.012` share their average
+displacement before validation, preventing near-overlapping profile vertices
+from vetoing an otherwise safe plan. If no non-zero regional scale satisfies
+the hard constraints, that region is rendered as identity.
+
+These geometric limits supplement the per-region handle caps and the hard `4%`
+whole-face displacement ceiling; Strength cannot override any of them.
 
 ## 11. Analysis result schema
 
