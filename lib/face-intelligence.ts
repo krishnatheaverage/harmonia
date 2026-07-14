@@ -119,6 +119,8 @@ export type PlannedAction = {
   amount: number;
   confidence: number;
   editability: number;
+  /** Maximum handle displacement as a fraction of detected face width. */
+  maxDisplacement: number;
   directions: Array<keyof DirectionMix>;
   rationale: string;
 };
@@ -824,8 +826,17 @@ function buildRegionEditability(
     : isThreeQuarter
       ? { Jaw: 0.72, Chin: 0.78, Nose: 0.64, Lips: 0.63, Brows: 0.62, "Face shape": 0.6, Symmetry: 0.16 }
       : pose.class.includes("profile")
-        ? { Jaw: 0.52, Chin: 0.74, Nose: 0.66, Lips: 0.56, Brows: 0.28, "Face shape": 0.46, Symmetry: 0 }
+        ? { Jaw: 0.64, Chin: 0.78, Nose: 0.68, Lips: 0.62, Brows: 0.38, "Face shape": 0.54, Symmetry: 0 }
         : { Jaw: 0, Chin: 0, Nose: 0, Lips: 0, Brows: 0, "Face shape": 0, Symmetry: 0 };
+  const displacementCeilings: Record<FaceRegion, number> = {
+    Jaw: 0.024,
+    Chin: 0.018,
+    Nose: 0.01,
+    Lips: 0.01,
+    Brows: 0.008,
+    "Face shape": 0.018,
+    Symmetry: 0.01,
+  };
   return (Object.entries(bases) as Array<[FaceRegion, number]>).map(([region, base]) => {
     const expressionFactor = expression.blockedRegions.includes(region) ? 0.32 : region === "Lips" ? expressionConfidenceForRegion("mouth", expression) : region === "Brows" ? expressionConfidenceForRegion("brow", expression) : expression.confidence;
     const score = clamp(base * (0.55 + quality * 0.45) * (0.62 + expressionFactor * 0.38) * (0.72 + pose.confidence * 0.28));
@@ -842,7 +853,7 @@ function buildRegionEditability(
       score,
       editable: score >= 0.55,
       reasons,
-      maxDisplacement: 0.004 + score * 0.012,
+      maxDisplacement: displacementCeilings[region] * (0.55 + score * 0.45),
     };
   });
 }
@@ -1199,20 +1210,28 @@ export function createMorphPlan(analysis: FaceAnalysis, requestedMix: DirectionM
     rationale: string,
     confidenceMultiplier = 1,
   ) => {
-    if (Math.abs(amount) < 0.018 || mix[direction] <= 0) return;
+    if (Math.abs(amount) < 0.012 || mix[direction] <= 0) return;
     const regionEditability = editability.get(region);
     const score = regionEditability?.score ?? 0;
     const confidence = clamp(analysis.overallConfidence * confidenceMultiplier);
-    if (!poseAllowsPlan || score < 0.5 || confidence < 0.5) {
+    const expressionBlocked = analysis.expression.blockedRegions.includes(region);
+    if (!poseAllowsPlan || !regionEditability?.editable || confidence < 0.5 || expressionBlocked) {
       rejectedReasons.push(`${region}: ${regionEditability?.reasons[0] ?? "confidence gate did not pass"}.`);
       return;
     }
-    const weightedAmount = amount * mix[direction] * confidence * score;
+    // Confidence and editability decide whether an edit is defensible. Once it
+    // clears that gate, use them once as reliability instead of repeatedly
+    // shrinking an otherwise valid plan. The square-root direction response
+    // keeps medium slider values useful while preserving exact zero and full.
+    const directionResponse = Math.sqrt(mix[direction]);
+    const reliability = Math.sqrt(confidence * score);
+    const weightedAmount = amount * directionResponse * reliability;
     const existing = actionMap.get(primitive);
     if (existing) {
       existing.amount = clamp(existing.amount + weightedAmount, -0.9, 0.9);
       existing.confidence = Math.min(existing.confidence, confidence);
       existing.editability = Math.min(existing.editability, score);
+      existing.maxDisplacement = Math.min(existing.maxDisplacement, regionEditability?.maxDisplacement ?? existing.maxDisplacement);
       if (!existing.directions.includes(direction)) existing.directions.push(direction);
       existing.rationale = `${existing.rationale} ${rationale}`;
     } else {
@@ -1222,6 +1241,7 @@ export function createMorphPlan(analysis: FaceAnalysis, requestedMix: DirectionM
         amount: clamp(weightedAmount, -0.9, 0.9),
         confidence,
         editability: score,
+        maxDisplacement: regionEditability?.maxDisplacement ?? 0.01,
         directions: [direction],
         rationale,
       });
@@ -1250,7 +1270,7 @@ export function createMorphPlan(analysis: FaceAnalysis, requestedMix: DirectionM
       rejectedReasons.push("Symmetry was disabled for this pose because perspective can imitate paired drift.");
     }
 
-    propose("jaw-width", "Jaw", 0.32, "dimorphism", "The explicit angularity direction adds a restrained lower-contour vector without inferring gender.", analysis.pose.class.includes("profile") ? 0.72 : 0.92);
+    propose("jaw-width", "Jaw", 0.32, "dimorphism", "The explicit angularity direction adds a restrained lower-contour vector without inferring gender.", analysis.pose.class.includes("profile") ? 0.9 : 0.92);
     propose("chin-length", "Chin", 0.13, "dimorphism", "A small chin-length component reinforces angular definition while preserving the existing centerline.");
     if (!analysis.pose.class.includes("profile")) {
       propose("brow-height", "Brows", 0.14, "dimorphism", "Brow geometry receives a small pose-valid angularity component; eye shape remains fixed.");
@@ -1258,17 +1278,19 @@ export function createMorphPlan(analysis: FaceAnalysis, requestedMix: DirectionM
   }
 
   const actions = [...actionMap.values()]
-    .filter((action) => Math.abs(action.amount) >= 0.012)
+    .filter((action) => Math.abs(action.amount) >= 0.008)
     .sort((a, b) => Math.abs(b.amount) * b.confidence * b.editability - Math.abs(a.amount) * a.confidence * a.editability)
     .slice(0, 6);
   const averageConfidence = actions.length
-    ? actions.reduce((sum, action) => sum + action.confidence * action.editability, 0) / actions.length
+    ? actions.reduce((sum, action) => sum + Math.sqrt(action.confidence * action.editability), 0) / actions.length
     : 0;
   const selectedCandidate: MorphPlan["selectedCandidate"] = !actions.length
     ? "identity"
-    : averageConfidence >= 0.77
-      ? "balanced"
-      : "light";
+    : averageConfidence >= 0.88
+      ? "full"
+      : averageConfidence >= 0.72
+        ? "balanced"
+        : "light";
   const moved = new Set(actions.map((action) => action.region));
   const preservedRegions = ["Cheeks and maxilla", "Eyes", "Skin texture", "Hair", "Background", ...analysis.regionEditability.map((entry) => entry.region)]
     .filter((region, index, all) => !moved.has(region as FaceRegion) && all.indexOf(region) === index)

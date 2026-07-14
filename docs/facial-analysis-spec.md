@@ -251,6 +251,23 @@ editability and geometric safety backoff. Unsupported operations—such as movin
 hairline/ears, creating profile depth not present in the photo, or changing a
 hidden side—are locked regardless of requested direction strength.
 
+`maxDisplacement` is an auditable per-region handle cap expressed as a fraction
+of detected face width. Capture quality and local editability may reduce it, but
+the planner and renderer may never raise it above these V2 ceilings:
+
+| Region | Maximum handle displacement |
+|---|---:|
+| Jaw | 2.4% of face width |
+| Chin | 1.8% of face width |
+| Face shape / envelope | 1.8% of face width |
+| Nose | 1.0% of face width |
+| Lips | 1.0% of face width |
+| Symmetry alignment | 1.0% of face width |
+| Brows | 0.8% of face width |
+
+These are motion ceilings, not targets. A plan can request less, and an
+ineligible region remains locked even when global Strength is `100`.
+
 ## 8. Harmony rules
 
 A harmony rule is a transparent, bounded planner policy. It declares inputs,
@@ -339,15 +356,38 @@ The planner then:
 5. rejects contradictory candidates rather than averaging them into a larger
    arbitrary move;
 6. limits the number of simultaneously active regions and total displacement;
-7. evaluates conservative candidate strengths; and
-8. asks the geometry validator for the strongest safe candidate, backing off to
-   the original geometry when none passes.
+7. records an evidence label (`light`, `balanced`, or `full`) for explanation,
+   without using that label as a hidden render multiplier; and
+8. asks the geometry validator for the strongest safe scale independently for
+   each affected region, preserving the original geometry for a region when no
+   non-zero scale passes.
 
 A valid result may therefore contain zero edits. `createMorphPlan` must return
 that no-op explicitly with reasons such as “inside deadbands,” “profile symmetry
 unavailable,” “low local confidence,” “region locked,” or “geometric validation
 failed.” Increasing a UI strength control changes the allowed cap; it does not
 make invalid evidence valid.
+
+### Strength and geometry-backoff contract
+
+The UI exposes global Strength directly on a `0–100` scale. `0` must render the
+unchanged source. `100` requests the complete already-bounded plan. Intermediate
+values interpolate linearly before geometry validation. There is no additional
+candidate-tier, confidence-tier, or mode-specific multiplier in the renderer;
+all evidence weighting is already represented in the planned actions.
+
+Geometry validation is the only post-plan attenuator. It evaluates one region at
+a time against the safe geometry already accepted, then binary-searches only an
+unsafe region toward zero. A nose constraint therefore cannot silently shrink a
+jaw edit that already passed. The result reports both the requested Strength and
+the applied per-region scales so geometric backoff is visible rather than hidden.
+
+Triangle orientation and output image bounds remain hard constraints: a
+foldover, orientation reversal, or target outside the image always fails,
+regardless of requested Strength. Area, edge-length, stretch, and shear checks
+bound meaningful mesh triangles; numerically tiny mesh slivers cannot veto an
+otherwise safe entire-face plan. If no non-zero regional scale satisfies the
+hard constraints, that region is rendered as identity.
 
 ## 11. Analysis result schema
 

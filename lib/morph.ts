@@ -30,6 +30,7 @@ export type MorphResult = {
   movedRegions: string[];
   maxMovementPx: number;
   safetyScale: number;
+  perRegionScale: Record<string, number>;
   safetyStatus: "passed" | "weakened" | "identity";
   plan: MorphPlan;
 };
@@ -55,9 +56,9 @@ export async function createFaceLandmarker(): Promise<FaceLandmarker> {
       const { FaceLandmarker, FilesetResolver } = await import(
         "@mediapipe/tasks-vision"
       );
-      canonicalFaceTriangles ??= trianglesFromConnections(
-        FaceLandmarker.FACE_LANDMARKS_TESSELATION,
-      );
+      if (!canonicalFaceTriangles) {
+        initializeFaceTopology(FaceLandmarker.FACE_LANDMARKS_TESSELATION);
+      }
       const vision = await FilesetResolver.forVisionTasks(
         publicAsset("mediapipe/wasm")
       );
@@ -177,10 +178,27 @@ function buildControls(
     Math.abs(frame.local(152).v - frame.local(10).v),
     1,
   );
-  const candidateScale = plan.selectedCandidate === "full" ? 1 : plan.selectedCandidate === "balanced" ? 0.86 : plan.selectedCandidate === "light" ? 0.62 : 0;
-  const scale = Math.min(faceWidth, faceHeight) * 0.085 * strength * candidateScale;
-  const movementLimit = faceWidth * 0.02;
-  const actionAmount = (primitive: string) => plan.actions.find((action) => action.primitive === primitive)?.amount ?? 0;
+  // Candidate labels describe planner certainty; they are not another hidden
+  // strength control. Geometry backoff below is the only post-plan attenuator.
+  const scale = Math.min(faceWidth, faceHeight) * 0.1 * strength;
+  const fallbackCaps: Record<string, number> = {
+    Jaw: 0.024,
+    Chin: 0.018,
+    Nose: 0.01,
+    Lips: 0.01,
+    Brows: 0.008,
+    Symmetry: 0.01,
+  };
+  const actionFor = (primitive: string) => plan.actions.find((action) => action.primitive === primitive);
+  const actionAmount = (primitive: string) => actionFor(primitive)?.amount ?? 0;
+  const movementLimitFor = (region: string) => {
+    const action = plan.actions.find((candidate) => candidate.region === region);
+    const plannedCap = action && "maxDisplacement" in action
+      ? Number(action.maxDisplacement)
+      : Number.NaN;
+    const cap = Number.isFinite(plannedCap) ? plannedCap : (fallbackCaps[region] ?? 0.01);
+    return faceWidth * clamp(cap, 0.004, fallbackCaps[region] ?? 0.024);
+  };
   const jawFactor = actionAmount("jaw-width");
   const chinFactor = actionAmount("chin-length");
   const noseFactor = actionAmount("nose-width");
@@ -193,13 +211,20 @@ function buildControls(
     dy: number,
     radius: number,
     region: string,
-  ) => controls.push({
-    source: p(index),
-    dx: clamp(dx, -movementLimit, movementLimit),
-    dy: clamp(dy, -movementLimit, movementLimit),
-    radius,
-    region,
-  });
+  ) => {
+    const movementLimit = movementLimitFor(region);
+    const magnitude = Math.hypot(dx, dy);
+    const movementScale = magnitude > movementLimit
+      ? movementLimit / Math.max(magnitude, 0.001)
+      : 1;
+    controls.push({
+      source: p(index),
+      dx: dx * movementScale,
+      dy: dy * movementScale,
+      radius,
+      region,
+    });
+  };
   const addLocal = (
     index: number,
     du: number,
@@ -232,33 +257,38 @@ function buildControls(
   );
 
   const chin = chinFactor * scale;
-  addLocal(152, 0, chin * 0.55, faceWidth * 0.07, "Chin");
-  addLocal(148, 0, chin * 0.2, faceWidth * 0.065, "Chin");
-  addLocal(377, 0, chin * 0.2, faceWidth * 0.065, "Chin");
+  addLocal(152, 0, chin * 0.7, faceWidth * 0.07, "Chin");
+  addLocal(148, 0, chin * 0.28, faceWidth * 0.065, "Chin");
+  addLocal(377, 0, chin * 0.28, faceWidth * 0.065, "Chin");
 
   const nose = noseFactor * scale;
-  if (!profileLike) {
-    [98, 97, 64, 49].forEach((index, order) => addLocal(index, nose * (0.24 - order * 0.025), 0, faceWidth * 0.048, "Nose"));
-    [327, 326, 294, 279].forEach((index, order) => addLocal(index, -nose * (0.24 - order * 0.025), 0, faceWidth * 0.048, "Nose"));
+  // Pose support is decided by the planner. If a front/three-quarter Nose
+  // action exists, compile it even when a separate 2D span heuristic looks
+  // profile-like. A wider field avoids concentrating strain in alar slivers.
+  if (useVisualLeft) {
+    [98, 97, 64, 49].forEach((index, order) => addLocal(index, nose * (0.55 - order * 0.045), 0, faceWidth * 0.065, "Nose"));
+  }
+  if (useVisualRight) {
+    [327, 326, 294, 279].forEach((index, order) => addLocal(index, -nose * (0.55 - order * 0.045), 0, faceWidth * 0.065, "Nose"));
   }
 
   const lipDelta = lipFactor * scale;
   if (Math.abs(lipDelta) > 0.001) {
-    [61, 78, 185, 146].forEach((index) => addLocal(index, -lipDelta * 0.2, 0, faceWidth * 0.046, "Lips"));
-    [291, 308, 409, 375].forEach((index) => addLocal(index, lipDelta * 0.2, 0, faceWidth * 0.046, "Lips"));
+    [61, 78, 185, 146].forEach((index) => addLocal(index, -lipDelta * 0.35, 0, faceWidth * 0.046, "Lips"));
+    [291, 308, 409, 375].forEach((index) => addLocal(index, lipDelta * 0.35, 0, faceWidth * 0.046, "Lips"));
   }
 
   const brow = browFactor * scale;
   const browWeights = [0.7, 0.9, 1, 0.78, 0.5];
   if (useVisualLeft) [70, 63, 105, 66, 107].forEach((index, order) =>
-    addLocal(index, 0, -brow * 0.18 * browWeights[order], faceWidth * 0.045, "Brows"),
+    addLocal(index, 0, -brow * 0.45 * browWeights[order], faceWidth * 0.045, "Brows"),
   );
   if (useVisualRight) [300, 293, 334, 296, 336].forEach((index, order) =>
-    addLocal(index, 0, -brow * 0.18 * browWeights[order], faceWidth * 0.045, "Brows"),
+    addLocal(index, 0, -brow * 0.45 * browWeights[order], faceWidth * 0.045, "Brows"),
   );
 
-  const poseFade = clamp(1 - yawSignal / 0.18, 0, 1);
-  const symmetry = symmetryFactor * strength * 0.32 * poseFade;
+  const poseFade = clamp((0.3 - yawSignal) / 0.22, 0, 1);
+  const symmetry = symmetryFactor * strength * 1.6 * poseFade;
   const centerU = (frame.local(10).u + frame.local(152).u + frame.local(1).u) / 3;
   const deadband = faceHeight * 0.0035;
   for (const [li, ri] of SYMMETRY_PAIRS.slice(0, 4)) {
@@ -297,7 +327,7 @@ function buildControls(
     faceWidth * 0.055,
   );
 
-  return controls.filter((control) => Math.hypot(control.dx, control.dy) > 0.05);
+  return controls.filter((control) => Math.hypot(control.dx, control.dy) > 0.01);
 }
 
 function drawTriangle(
@@ -382,6 +412,15 @@ function trianglesFromConnections(
     }
   }
   return triangles;
+}
+
+/** Initialize the exact MediaPipe face topology without starting the detector. */
+export function initializeFaceTopology(
+  connections: Array<{ start: number; end: number }>,
+) {
+  canonicalFaceTriangles = trianglesFromConnections(connections);
+  meshCache = new WeakMap<HTMLCanvasElement, MeshData>();
+  return canonicalFaceTriangles.length;
 }
 
 function circumcircleContains(points: Point[], triangle: Triangle, point: Point) {
@@ -481,7 +520,7 @@ type MeshData = {
   signature: string;
 };
 
-const meshCache = new WeakMap<HTMLCanvasElement, MeshData>();
+let meshCache = new WeakMap<HTMLCanvasElement, MeshData>();
 
 function buildFaceMesh(
   sourceCanvas: HTMLCanvasElement,
@@ -572,13 +611,6 @@ function regularizeDisplacements(displacements: Point[], mesh: MeshData) {
   return current;
 }
 
-function targetForScale(points: Point[], displacements: Point[], scale: number) {
-  return points.map((point, index) => ({
-    x: point.x + displacements[index].x * scale,
-    y: point.y + displacements[index].y * scale,
-  }));
-}
-
 function planIsSafe(
   source: Point[],
   target: Point[],
@@ -599,10 +631,30 @@ function planIsSafe(
     const sourceArea = signedArea(source[a], source[b], source[c]);
     const targetArea = signedArea(target[a], target[b], target[c]);
     const areaRatio = Math.abs(targetArea / sourceArea);
-    if (sourceArea * targetArea <= 0 || areaRatio < 0.75 || areaRatio > 1.3) return false;
+    // A foldover is never negotiable. Ratio checks, however, are numerically
+    // noisy on sub-pixel mesh slivers and used to make one tiny triangle erase
+    // an otherwise safe whole-face edit.
+    if (sourceArea * targetArea <= 0) return false;
+    const sourceEdges = [[a, b], [b, c], [c, a]].map(([start, end]) =>
+      Math.hypot(source[start].x - source[end].x, source[start].y - source[end].y),
+    );
+    const minimumImageDimension = Math.min(width, height);
+    const normalizedArea = Math.abs(sourceArea) / Math.max(width * height, 1);
+    const normalizedMinimumEdge = Math.min(...sourceEdges) / Math.max(minimumImageDimension, 1);
+    if (normalizedArea < 0.000001 || normalizedMinimumEdge < 0.0015) {
+      const differentialLimit = clamp(minimumImageDimension * 0.0012, 0.2, 1.5);
+      return [[a, b], [b, c], [c, a]].every(([start, end]) => {
+        const startDx = target[start].x - source[start].x;
+        const startDy = target[start].y - source[start].y;
+        const endDx = target[end].x - source[end].x;
+        const endDy = target[end].y - source[end].y;
+        return Math.hypot(startDx - endDx, startDy - endDy) <= differentialLimit;
+      });
+    }
+    if (areaRatio < 0.68 || areaRatio > 1.42) return false;
     const edgesSafe = [[a, b], [b, c], [c, a]].every(([start, end]) => {
       const ratio = edgeRatio(start, end);
-      return ratio > 0.82 && ratio < 1.22;
+      return ratio > 0.78 && ratio < 1.28;
     });
     if (!edgesSafe) return false;
 
@@ -629,9 +681,9 @@ function planIsSafe(
       Math.max(0, (frobeniusSquared - discriminant) / 2),
     );
     return (
-      minimumStretch > 0.78 &&
-      maximumStretch < 1.25 &&
-      maximumStretch / Math.max(minimumStretch, 0.001) < 1.35
+      minimumStretch > 0.74 &&
+      maximumStretch < 1.32 &&
+      maximumStretch / Math.max(minimumStretch, 0.001) < 1.5
     );
   });
 }
@@ -657,6 +709,7 @@ export function morphImage(
       movedRegions: [],
       maxMovementPx: 0,
       safetyScale: 0,
+      perRegionScale: {},
       safetyStatus: "identity",
       plan,
     };
@@ -664,34 +717,97 @@ export function morphImage(
 
   const controls = buildControls(landmarks, width, height, plan, strength);
   const mesh = buildFaceMesh(sourceCanvas, landmarks);
-  const rawDisplacements = mesh.points.map((point, index) =>
-    index < mesh.facePointCount
-      ? fieldDisplacement(point, controls)
-      : { x: 0, y: 0 },
-  );
-  const displacements = regularizeDisplacements(rawDisplacements, mesh);
-
-  let planScale = 1;
-  let targetPoints = targetForScale(mesh.points, displacements, planScale);
-  if (!planIsSafe(mesh.points, targetPoints, mesh.triangles, width, height)) {
-    let safeScale = 0;
-    let unsafeScale = 1;
-    for (let attempt = 0; attempt < 10; attempt += 1) {
-      const candidateScale = (safeScale + unsafeScale) / 2;
-      const candidate = targetForScale(mesh.points, displacements, candidateScale);
-      if (planIsSafe(mesh.points, candidate, mesh.triangles, width, height)) {
-        safeScale = candidateScale;
-      }
-      else unsafeScale = candidateScale;
-    }
-    planScale = safeScale;
-    targetPoints = targetForScale(mesh.points, displacements, planScale);
+  const controlsByRegion = new Map<string, Control[]>();
+  for (const control of controls) {
+    const regionControls = controlsByRegion.get(control.region) ?? [];
+    regionControls.push(control);
+    controlsByRegion.set(control.region, regionControls);
   }
+  const regionOrder = [...new Set([
+    ...plan.actions.map((action) => action.region),
+    ...controlsByRegion.keys(),
+  ])];
+  const totalDisplacements = mesh.points.map(() => ({ x: 0, y: 0 }));
+  let targetPoints = mesh.points.map((point) => ({ ...point }));
+  const perRegionScale: Record<string, number> = {};
+  const movedRegions: string[] = [];
+  let weightedScale = 0;
+  let weightTotal = 0;
+  let anyBackoff = false;
+
+  // Admit each region independently against the already-safe target. A local
+  // nose or lip constraint can now weaken that region without shrinking the
+  // jaw, chin, and brow edits that already passed.
+  for (const region of regionOrder) {
+    const regionControls = controlsByRegion.get(region) ?? [];
+    if (!regionControls.length) continue;
+    const rawDisplacements = mesh.points.map((point, index) =>
+      index < mesh.facePointCount
+        ? fieldDisplacement(point, regionControls)
+        : { x: 0, y: 0 },
+    );
+    const displacements = regularizeDisplacements(rawDisplacements, mesh);
+    const regionWeight = Math.max(
+      ...displacements.map((point) => Math.hypot(point.x, point.y)),
+      0,
+    );
+    if (regionWeight <= 0.01) {
+      perRegionScale[region] = 0;
+      continue;
+    }
+
+    const actionPeak = Math.max(
+      ...plan.actions
+        .filter((action) => action.region === region)
+        .map((action) => Math.abs(action.amount)),
+      0,
+    );
+    // Planned primitives are contractually bounded to ±0.9. Preserve a safe,
+    // visible portion of malformed or future oversized requests instead of
+    // trusting the control clamp and reporting a false pass.
+    const contractScale = actionPeak > 0.9 ? 0.9 / actionPeak : 1;
+    let regionScale = contractScale;
+    const candidateFor = (scaleAmount: number) => targetPoints.map((point, index) => ({
+      x: point.x + displacements[index].x * scaleAmount,
+      y: point.y + displacements[index].y * scaleAmount,
+    }));
+    if (!planIsSafe(mesh.points, candidateFor(regionScale), mesh.triangles, width, height)) {
+      let safeScale = 0;
+      let unsafeScale = regionScale;
+      for (let attempt = 0; attempt < 11; attempt += 1) {
+        const candidateScale = (safeScale + unsafeScale) / 2;
+        if (planIsSafe(mesh.points, candidateFor(candidateScale), mesh.triangles, width, height)) {
+          safeScale = candidateScale;
+        } else {
+          unsafeScale = candidateScale;
+        }
+      }
+      regionScale = safeScale;
+    }
+    if (regionScale < 0.02) regionScale = 0;
+    perRegionScale[region] = regionScale;
+    weightedScale += regionScale * regionWeight;
+    weightTotal += regionWeight;
+    if (regionScale < 0.995) anyBackoff = true;
+    if (regionScale === 0) continue;
+    targetPoints = candidateFor(regionScale);
+    displacements.forEach((point, index) => {
+      totalDisplacements[index].x += point.x * regionScale;
+      totalDisplacements[index].y += point.y * regionScale;
+    });
+    movedRegions.push(region);
+  }
+
+  const safetyScale = weightTotal > 0 ? weightedScale / weightTotal : 0;
+  const maxMovementPx = Math.max(
+    ...totalDisplacements.map((point) => Math.hypot(point.x, point.y)),
+    0,
+  );
 
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
   ctx.drawImage(sourceCanvas, 0, 0);
-  const identityOnly = controls.length === 0 || planScale < 0.08 || mesh.triangles.length === 0;
+  const identityOnly = controls.length === 0 || maxMovementPx < 0.05 || mesh.triangles.length === 0;
   if (!identityOnly) {
     const layer = document.createElement("canvas");
     layer.width = width;
@@ -722,18 +838,13 @@ export function morphImage(
     ctx.drawImage(layer, 0, 0);
   }
 
-  const maxMovementPx = identityOnly
-    ? 0
-    : Math.max(
-        ...displacements.map((point) => Math.hypot(point.x, point.y) * planScale),
-        0,
-      );
   return {
     canvas: output,
-    movedRegions: identityOnly ? [] : [...new Set(controls.map((control) => control.region))],
-    maxMovementPx,
-    safetyScale: identityOnly ? 0 : planScale,
-    safetyStatus: identityOnly ? "identity" : planScale < 0.995 ? "weakened" : "passed",
+    movedRegions: identityOnly ? [] : movedRegions,
+    maxMovementPx: identityOnly ? 0 : maxMovementPx,
+    safetyScale: identityOnly ? 0 : safetyScale,
+    perRegionScale,
+    safetyStatus: identityOnly ? "identity" : anyBackoff ? "weakened" : "passed",
     plan,
   };
 }

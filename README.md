@@ -25,9 +25,15 @@ ratios is a universal ideal.
   whether it is a target, guardrail, context signal, or preservation signal.
 - Region editability combines pose, visibility, image quality, expression, mesh
   support, and distance from protected boundaries. Low-confidence regions lock
-  or receive a smaller displacement budget.
+  or receive a smaller, explicit displacement budget. Current hard ceilings are
+  2.4% of detected face width for jaw handles, 1.8% for chin/face-envelope
+  handles, 1.0% for nose/lips/symmetry, and 0.8% for brows.
 - Harmony, Symmetry, and Dimorphism are blended into one joint plan instead of
   being applied as mutually exclusive filters.
+- The visible global Strength control is the only user-facing final amplitude
+  multiplier: `0` is the unchanged source and `100` requests the full bounded
+  plan. Planner labels such as light, balanced, and full describe evidence; they
+  do not silently reduce the rendered edit.
 - Deadbands, edit budgets, compatibility checks, and geometry validation allow
   the planner to return a conservative no-op when an edit is not well supported.
 
@@ -58,13 +64,17 @@ symmetry is not treated as measurable from a profile.
 3. Resolve pose and map the dense mesh to 104 semantic planning proxies.
 4. Evaluate the pose-valid subset of the 408-measurement catalog with confidence
    and editability scores.
-5. Create and rank small joint-plan candidates from the three direction weights;
+5. Create and rank a bounded joint plan from the three direction weights;
    preserve regions that are already coherent or uncertain.
 6. Smooth selected targets across the fixed face topology while holding a narrow
    outer boundary ring fixed.
-7. Reduce the edit until every triangle passes orientation, area, stretch, shear,
-   and image-bound checks. If no candidate is safe, return the original geometry.
-8. Replace the face region once; leave texture, lighting, color, and all pixels
+7. Validate each affected region against the geometry already accepted. If one
+   region exceeds the strain budget, binary-search that region's strongest safe
+   scale without shrinking unrelated regions that already passed.
+8. Treat triangle foldovers and image-bound violations as hard failures at every
+   strength. If a region has no safe non-zero scale, preserve its original
+   geometry.
+9. Replace the face region once; leave texture, lighting, color, and all pixels
    outside the protected boundary unchanged.
 
 ## Privacy

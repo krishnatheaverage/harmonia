@@ -396,6 +396,30 @@ function planActionReadouts(plan: MorphPlan | null): PlanActionReadout[] {
   });
 }
 
+function plannerConfidence(plan: MorphPlan | null) {
+  const root = asRecord(plan);
+  const source = Array.isArray(root.actions)
+    ? root.actions
+    : Array.isArray(root.edits)
+      ? root.edits
+      : [];
+  const scores = source
+    .map((value) => {
+      const action = asRecord(value);
+      const rawConfidence = firstNumber(action, ["confidence", "score", "plannerConfidence"]);
+      if (rawConfidence === undefined) return undefined;
+      const rawEditability = firstNumber(action, ["editability", "regionConfidence"]);
+      const confidence = Math.max(0, Math.min(1, rawConfidence > 1 ? rawConfidence / 100 : rawConfidence));
+      const editability = rawEditability === undefined
+        ? 1
+        : Math.max(0, Math.min(1, rawEditability > 1 ? rawEditability / 100 : rawEditability));
+      return Math.sqrt(confidence * editability);
+    })
+    .filter((value): value is number => value !== undefined);
+  if (!scores.length) return null;
+  return scores.reduce((total, value) => total + value, 0) / scores.length;
+}
+
 function preservedRegions(plan: MorphPlan | null) {
   const root = asRecord(plan);
   const value = root.preservedRegions;
@@ -425,7 +449,7 @@ export default function Home() {
   const [error, setError] = useState("");
   const [fileName, setFileName] = useState("");
   const [directionMix, setDirectionMix] = useState<DirectionMix>(DEFAULT_DIRECTION_MIX);
-  const [strength, setStrength] = useState(42);
+  const [strength, setStrength] = useState(50);
   const [showOriginal, setShowOriginal] = useState(false);
   const [showMesh, setShowMesh] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -717,8 +741,40 @@ export default function Home() {
   const counts = analysisCounts(analysis);
   const editability = editabilityReadouts(analysis);
   const planActions = planActionReadouts(plan);
+  const planConfidence = plannerConfidence(plan);
   const preserved = preservedRegions(plan);
   const rejected = rejectedReasons(plan);
+  const hasPlannedEdit = planActions.length > 0;
+  const geometryScaleLabel = !hasPlannedEdit
+    ? "No edit"
+    : strength === 0
+      ? "Not run"
+      : safetyStatus === "identity"
+        ? "Blocked"
+        : `${Math.round(safetyScale * 100)}%`;
+  const geometryBackoffLabel = !hasPlannedEdit
+    ? "Not needed"
+    : strength === 0
+      ? "Not run"
+      : safetyStatus === "identity"
+        ? "Blocked"
+        : safetyStatus === "weakened"
+          ? `${Math.round((1 - safetyScale) * 100)}%`
+          : "None";
+  const guardrailTitle = !hasPlannedEdit
+    ? "No edit selected"
+    : strength === 0
+      ? "Strength is set to zero"
+      : safetyStatus === "identity"
+        ? "Mesh guardrail blocked this warp"
+        : safetyStatus === "weakened"
+          ? "Mesh guardrail reduced the warp"
+          : "Mesh guardrail passed";
+  const guardrailDetail = !hasPlannedEdit
+    ? rejected[0] || "Every pose-valid measurement stayed inside its uncertainty range."
+    : regions.length
+      ? regions.join(" · ")
+      : "The planner has an edit, but no pixels are moving at the current strength.";
   const activeDirectionLabels = DIRECTION_OPTIONS
     .filter((option) => directionMix[option.id] > 0)
     .map((option) => option.label);
@@ -838,24 +894,35 @@ export default function Home() {
           </div>
           <input
             className="range"
-            style={{ "--range": `${(strength / 70) * 100}%` } as CSSProperties}
+            style={{ "--range": `${strength}%` } as CSSProperties}
             type="range"
             min="0"
-            max="70"
+            max="100"
             value={strength}
             onChange={(event) => setStrength(Number(event.target.value))}
             aria-label="Global edit strength"
           />
-          <div className="range-labels"><span>Subtle</span><span>Conservative limit</span></div>
+          <div className="range-labels"><span>Subtle</span><span>Maximum safe</span></div>
 
           {status === "ready" && (
-            <div className="safety-card">
-              <div>
+            <div className={`safety-card ${!hasPlannedEdit ? "is-no-plan" : `is-${safetyStatus}`}`}>
+              <div className="safety-summary">
                 <span className="safety-icon">◇</span>
-                <strong>{safetyStatus === "weakened" ? "Guardrail reduced the blended plan" : safetyStatus === "identity" ? "Original geometry retained" : "Blended plan passed"}</strong>
-                <small>{regions.length ? regions.join(" · ") : "No confident region needed movement"}</small>
+                <div>
+                  <strong>{guardrailTitle}</strong>
+                  <small>{guardrailDetail}</small>
+                </div>
               </div>
-              <span>{Math.round(safetyScale * 100)}% plan · {movement.toFixed(1)} px</span>
+              <div className="safety-strength-flow" aria-label={`Requested strength ${strength} percent; geometry scale ${geometryScaleLabel}`}>
+                <div><small>Requested strength</small><output>{strength}%</output></div>
+                <span aria-hidden="true">→</span>
+                <div><small>Geometry scale</small><output>{geometryScaleLabel}</output></div>
+              </div>
+              <div className="safety-diagnostics">
+                <span><small>Planner reliability</small><b>{planConfidence === null ? "No action" : `${Math.round(planConfidence * 100)}%`}</b></span>
+                <span><small>Geometry backoff</small><b>{geometryBackoffLabel}</b></span>
+                <span><small>Peak movement</small><b>{hasPlannedEdit && safetyStatus !== "identity" ? `${movement.toFixed(1)} px` : "None"}</b></span>
+              </div>
             </div>
           )}
 
