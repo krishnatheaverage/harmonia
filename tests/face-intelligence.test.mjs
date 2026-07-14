@@ -77,3 +77,19 @@ test("directions blend into one plan and no-op remains available", () => {
   assert.equal(noOp.actions.length, 0);
   assert.equal(noOp.selectedCandidate, "identity");
 });
+
+test("a closed proportional mouth is not falsely locked by one pucker coefficient", () => {
+  const observation = fixture(0.5);
+  observation.blendshapes = { mouthPucker: 0.54 };
+  const analysis = analyzeFace(observation, 1000, 1200, {
+    qualityConfidence: 1,
+    temporalStability: 1,
+    resolutionSupport: 1,
+    exposureSupport: 1,
+  });
+  const plan = createMorphPlan(analysis, { harmony: 70, symmetry: 25, dimorphism: 55 });
+
+  assert.ok(!analysis.expression.blockedRegions.includes("Chin"));
+  assert.ok(!analysis.expression.blockedRegions.includes("Lips"));
+  assert.ok(plan.actions.some((action) => action.region === "Chin"));
+});

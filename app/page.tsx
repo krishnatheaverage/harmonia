@@ -444,7 +444,7 @@ export default function Home() {
   const [error, setError] = useState("");
   const [fileName, setFileName] = useState("");
   const [directionMix, setDirectionMix] = useState<DirectionMix>(DEFAULT_DIRECTION_MIX);
-  const [strength, setStrength] = useState(80);
+  const [strength, setStrength] = useState(100);
   const [showOriginal, setShowOriginal] = useState(false);
   const [showMesh, setShowMesh] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -505,6 +505,7 @@ export default function Home() {
   const processFile = async (file?: File) => {
     if (!file) return;
     stopCamera();
+    setShowOriginal(false);
     if (!file.type.startsWith("image/")) {
       setError("Choose a JPG, PNG, or WebP portrait.");
       setStatus("error");
@@ -742,6 +743,7 @@ export default function Home() {
   const preserved = preservedRegions(plan);
   const rejected = rejectedReasons(plan);
   const hasPlannedEdit = planActions.length > 0;
+  const hasVisibleMorph = hasPlannedEdit && safetyStatus !== "identity" && movement >= 0.5;
   const geometryScaleLabel = !hasPlannedEdit
     ? "No edit"
     : strength === 0
@@ -845,6 +847,9 @@ export default function Home() {
                 <button className={showOriginal ? "active" : ""} onClick={() => setShowOriginal(true)}>Before</button>
                 <button className={!showOriginal ? "active" : ""} onClick={() => setShowOriginal(false)}>After</button>
               </div>
+              {status === "ready" && !hasVisibleMorph && (
+                <div className="no-morph-banner" role="status">No visible morph passed the current safety checks.</div>
+              )}
             </div>
           )}
           {status === "loading" && (
@@ -972,7 +977,7 @@ export default function Home() {
 
           <div className="panel-actions">
             <button className="mesh-button" disabled={status !== "ready"} onClick={() => setShowMesh((value) => !value)} aria-pressed={showMesh}><span>⌘</span>{showMesh ? "Hide map" : "Show map"}</button>
-            <button className="export-button" disabled={status !== "ready"} onClick={download}>Export exact PNG <span>↓</span></button>
+            <button className="export-button" disabled={status !== "ready" || !hasVisibleMorph} onClick={download}>Export exact PNG <span>↓</span></button>
           </div>
           {status === "ready" && <button className="start-over" onClick={reset}>Start over with a different photo</button>}
         </aside>

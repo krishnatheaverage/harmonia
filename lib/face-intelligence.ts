@@ -781,7 +781,25 @@ function blendshapeScore(observation: FaceObservation, ...names: string[]) {
 
 function readExpression(observation: FaceObservation) {
   const jawOpen = blendshapeScore(observation, "jawOpen");
-  const pucker = blendshapeScore(observation, "mouthPucker", "mouthFunnel");
+  const rawPucker = blendshapeScore(observation, "mouthPucker", "mouthFunnel");
+  const distance = (a: number, b: number) => Math.hypot(
+    observation.landmarks[a].x - observation.landmarks[b].x,
+    observation.landmarks[a].y - observation.landmarks[b].y,
+  );
+  const mouthWidth = distance(61, 291);
+  const faceWidth = Math.max(distance(234, 454), 0.001);
+  const noseWidth = Math.max(distance(98, 327), 0.001);
+  const mouthToFace = mouthWidth / faceWidth;
+  const mouthToNose = mouthWidth / noseWidth;
+  // MediaPipe can report a strong mouthPucker coefficient for naturally full,
+  // closed lips. Require supporting 2D narrowing before that coefficient can
+  // fully lock the lips and chin; retain a 40% floor so a true pucker remains
+  // conservative even when perspective makes the width cue ambiguous.
+  const puckerGeometry = Math.max(
+    clamp((0.3 - mouthToFace) / 0.1),
+    clamp((1.3 - mouthToNose) / 0.38),
+  );
+  const pucker = rawPucker * (0.4 + puckerGeometry * 0.6);
   const smile = blendshapeScore(observation, "mouthSmileLeft", "mouthSmileRight");
   const blink = blendshapeScore(observation, "eyeBlinkLeft", "eyeBlinkRight");
   const squint = blendshapeScore(observation, "eyeSquintLeft", "eyeSquintRight");

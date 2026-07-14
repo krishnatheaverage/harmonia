@@ -228,6 +228,13 @@ pose distance, transform/2D disagreement, local mesh spacing, and relevant
 blendshape activity attenuate confidence. The UI may summarize confidence but
 must retain per-measurement reasons for planner diagnostics.
 
+Expression gating must combine detector coefficients with observable geometry.
+For mouth pucker, the implementation corroborates the detector output with both
+mouth-to-face and mouth-to-nose width. A high pucker coefficient on otherwise
+proportional, neutral closed lips must not falsely lock the Lips and Chin
+regions. A residual coefficient floor remains so genuine puckering stays
+conservative when projection makes width evidence ambiguous.
+
 ## 7. Region editability
 
 Editability answers a different question: “even if this relationship is
@@ -354,6 +361,16 @@ triangles and validates orientation, area, stretch, shear, and bounds. The
 boundary anchors have zero displacement, so original pixels outside the warp
 boundary—including the background—remain unchanged.
 
+For every supported non-profile Jaw action, the renderer constructs both a
+continuous image-space lower-face field and a conservative grouped-control
+field, then validates each against the same already-accepted geometry. The
+continuous field starts below the mouth, grows toward the chin, keeps the
+centerline stable, and moves the lower side contours smoothly. Near-front views
+prefer that field; otherwise the renderer selects the safe candidate with the
+broader P95 landmark impact. This avoids both concentrated jaw handles and an
+unsafe raw interpolation between incompatible fields. Profiles retain the
+visible-silhouette grouped-control path.
+
 ## 10. Joint planner
 
 `DEFAULT_DIRECTION_MIX` initializes three independent weights. The UI exposes all
@@ -440,21 +457,22 @@ make invalid evidence valid.
 ### Strength and geometry-backoff contract
 
 The UI exposes global Strength directly on a `0–100` scale and initializes it to
-`80`. `0` must render the unchanged source. `100` requests the complete
-already-bounded plan. For normalized slider position `s`, the renderer applies
-`s^2.5` before geometry validation. This deliberate high-end response curve
-keeps medium settings visibly distinct from a full request instead of reaching
-the same guardrail plateau early. There is no additional candidate-tier,
-confidence-tier, or mode-specific multiplier in the renderer; all evidence
-weighting is already represented in the planned actions.
+`100`. `0` must render the unchanged source. For normalized slider position
+`s`, the renderer applies `(s × m)^2.5` before geometry validation. The
+pose-calibrated maximum `m` is `0.80`; a smooth reserve through sliver-sensitive
+mild yaw can reduce it to `0.55`, while true profiles retain their separate
+conservative path. This calibration makes the top of the visible slider the
+strongest verified-safe request instead of letting `82–100` cross a safety
+cliff and become weaker than `80`. There is no candidate-tier or confidence-tier
+render multiplier; evidence weighting remains represented in planned actions.
 
-After the requested Strength has been mapped through the visible response curve,
-geometry validation is the only adaptive safety backoff. It evaluates one region
-at a time against the safe geometry already accepted, then binary-searches only
-an unsafe region toward zero. A nose constraint therefore cannot silently shrink
-a jaw edit that already passed. The result reports both the requested Strength
-and the applied per-region scales so geometric backoff is visible rather than
-hidden.
+After Strength has been mapped through that documented pose calibration,
+geometry validation evaluates one region at a time against the safe geometry
+already accepted, then binary-searches only an unsafe region toward zero. A nose
+constraint therefore cannot silently shrink a jaw edit that already passed. For
+a non-profile jaw, analytic and grouped candidates are searched independently
+before selection. The result reports the requested Strength and applied
+per-region scales so geometry backoff remains visible.
 
 Triangle orientation and output image bounds remain hard constraints: a
 foldover, orientation reversal, or target outside the image always fails,
@@ -464,10 +482,16 @@ strictly inside `(0.68, 1.45)`; singular stretches must stay at least `0.68` and
 below `1.48`; and the local condition number must remain below `1.8`.
 Numerically tiny triangles use a bounded differential-displacement check instead:
 the threshold is `clamp(0.0024 × min(image width, image height), 0.35 px, 2.8 px)`.
-Projected sliver groups with quality below `0.012` share their average
-displacement before validation, preventing near-overlapping profile vertices
-from vetoing an otherwise safe plan. If no non-zero regional scale satisfies
-the hard constraints, that region is rendered as identity.
+Projected quality is `abs(signed triangle area) / maximumEdge²`. Continuous jaw
+candidates and near-frontal fields stabilize triangles below quality `0.02` with
+exactly two local incident-triangle passes: each incident sliver contributes a
+local average to its own vertices, without a transitive union that can carry one
+jaw motion across unrelated cheek triangles. Conservative grouped candidates,
+including the profile path, use connected-group treatment below quality `0.012`,
+where each connected projected-sliver group shares one displacement. Non-finite
+target coordinates or displacement weights are rejected rather than reaching
+the rasterizer. If no non-zero regional scale satisfies the hard constraints,
+that region is rendered as identity.
 
 These geometric limits supplement the per-region handle caps and the hard `4%`
 whole-face displacement ceiling; Strength cannot override any of them.
@@ -497,6 +521,10 @@ confidence computation, editability computation, rules, and morph planning are
 separate phases. This allows a measurement to remain visible for diagnostics
 without accidentally becoming an edit command.
 
+When a user chooses a new local image, the application resets the comparison
+state to **After** before analysis and rendering. A prior **Before** selection
+must never make a newly processed portrait appear unchanged by default.
+
 ## 12. Validation requirements
 
 Automated tests must verify:
@@ -508,9 +536,12 @@ Automated tests must verify:
 - profile analysis invalidates bilateral symmetry and hidden-side width targets;
 - low quality or editability can produce an explicit no-op;
 - blended direction weights can jointly support compatible edits without
-  exceeding per-region and total budgets; and
+  exceeding per-region and total budgets;
 - final dense targets still pass renderer foldover, stretch, shear, area, and
-  image-bound checks.
+  image-bound checks;
+- non-finite displacement weights and target coordinates are rejected; and
+- a real textured-raster fixture produces a visible supported lower-face edit
+  without materially resampling distant pixels outside the fixed face boundary.
 
 Visual QA must use front, moderate three-quarter, and clean profile examples plus
 blur, crop, expression, occlusion, and unusual-proportion stress cases. A useful

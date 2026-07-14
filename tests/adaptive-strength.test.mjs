@@ -360,7 +360,7 @@ for (const { yaw, pose, minimumP95, minimumMax } of [
     }
     assert.ok(
       strongStats.max >= faceReference * minimumMax,
-      `${pose} strong morph must reach ${(minimumMax * 100).toFixed(1)}% of pose-stable face scale at its active contour`,
+      `${pose} strong morph must reach ${(minimumMax * 100).toFixed(1)}% of pose-stable face scale at its active contour (${strongStats.max.toFixed(2)}px of ${faceReference.toFixed(2)}px)`,
     );
     assert.ok(
       strongStats.p95 >= mediumStats.p95 * 1.5,
@@ -411,6 +411,77 @@ test("a locked region remains absent even at maximum visible strength", () => {
   assert.equal(rendered.perRegionScale.Jaw, undefined);
   assert.match(plan.rejectedReasons.join(" "), /Jaw: Synthetic hard lock/i);
   assertAnchoredSafeRender(rendered, observation);
+});
+
+test("zero and negative jaw budgets remain hard no-op caps", () => {
+  const observation = faceFixture();
+  const analysis = analyzeFace(observation, WIDTH, HEIGHT, QUALITY);
+  const fullPlan = createMorphPlan(analysis, { harmony: 100, symmetry: 0, dimorphism: 100 });
+  const jawAction = fullPlan.actions.find((action) => action.region === "Jaw");
+  assert.ok(jawAction, "fixture must produce a Jaw action");
+
+  for (const maxDisplacement of [0, -0.02]) {
+    const cappedPlan = {
+      ...fullPlan,
+      actions: [{ ...jawAction, maxDisplacement }],
+    };
+    const rendered = render(observation, cappedPlan, 100);
+    assert.equal(rendered.maxMovementPx, 0);
+    assert.ok(!rendered.movedRegions.includes("Jaw"));
+    assert.equal(rendered.safetyStatus, "identity");
+  }
+});
+
+test("jaw output stays visible from front to mild three-quarter poses", () => {
+  const sourceObservation = faceFixture();
+  const analysis = analyzeFace(sourceObservation, WIDTH, HEIGHT, QUALITY);
+  const plan = createMorphPlan(analysis, { harmony: 100, symmetry: 0, dimorphism: 100 });
+  const fixedJawPlan = {
+    ...plan,
+    actions: plan.actions.filter((action) => action.region === "Jaw"),
+  };
+  const movements = [];
+  let priorMovement = 0;
+  for (let yaw = 0; yaw <= 30; yaw += 1) {
+    const rendered = render(faceFixture({ yaw }), fixedJawPlan, 100);
+    movements.push(rendered.maxMovementPx);
+    if (priorMovement > 0) {
+      assert.ok(
+        rendered.maxMovementPx >= priorMovement * 0.2 &&
+          rendered.maxMovementPx <= priorMovement * 5,
+        `one degree of yaw caused a jaw cliff at ${yaw}° (${priorMovement.toFixed(2)}px -> ${rendered.maxMovementPx.toFixed(2)}px)`,
+      );
+    }
+    priorMovement = rendered.maxMovementPx;
+  }
+  assert.ok(
+    Math.min(...movements) >= 1.8,
+    `a supported mild yaw collapsed below a visible jaw edit (${movements.map((value) => value.toFixed(2)).join(", ")})`,
+  );
+});
+
+test("visible strength does not reduce peak impact across supported poses", () => {
+  for (const yaw of [0, 8, 18, 30, 58]) {
+    const observation = faceFixture({ yaw, asymmetric: yaw === 0 });
+    const analysis = analyzeFace(observation, WIDTH, HEIGHT, QUALITY);
+    const plan = createMorphPlan(analysis, {
+      harmony: 100,
+      symmetry: yaw === 0 ? 100 : 0,
+      dimorphism: 100,
+    });
+    let priorImpact = 0;
+    let priorStrength = 0;
+    for (const strength of [55, 65, 75, 80, 85, 90, 95, 100]) {
+      const rendered = render(observation, plan, strength);
+      const impact = rendered.maxMovementPx;
+      assert.ok(
+        impact >= priorImpact * 0.98,
+        `yaw ${yaw} became weaker from ${priorStrength}% to ${strength}% (${priorImpact.toFixed(2)}px -> ${impact.toFixed(2)}px peak; ${JSON.stringify(rendered.perRegionScale)})`,
+      );
+      priorImpact = Math.max(priorImpact, impact);
+      priorStrength = strength;
+    }
+  }
 });
 
 test("a pathological request backs off to a bounded non-collapsed safe morph", () => {

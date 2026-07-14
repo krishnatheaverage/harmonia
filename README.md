@@ -40,14 +40,18 @@ ratios is a universal ideal.
   ceilings are 4.5% for jaw, 3.5% for chin and face envelope, 2.2% for nose and
   lips, 1.6% for brows, and 1.5% for symmetry alignment. A separate 4% whole-face
   displacement limit bounds the final dense result.
+- Expression locks require corroborating image geometry. In particular, a high
+  detector pucker coefficient does not by itself lock the chin and lips when
+  mouth-to-face and mouth-to-nose widths still describe neutral closed lips.
 - Harmony, Symmetry, and Angularity are blended into one joint plan instead of
   being applied as mutually exclusive filters. The default mix is `70 / 25 / 55`.
 - The visible global Strength control is the only user-facing final amplitude
-  control: it starts at `80`; `0` is the unchanged source; and `100` requests the
-  full bounded plan. The renderer maps normalized slider position `s` to
-  `s^2.5`, preserving useful high-end headroom before geometry validation.
-  Planner labels such as light, balanced, and full describe evidence; they do
-  not silently reduce the rendered edit.
+  control: it starts at `100`, while `0` is the unchanged source. The renderer
+  maps normalized slider position `s` through `(s × m)^2.5`, where the verified
+  pose calibration `m` is `0.80` and smoothly reserves up to `0.25` more through
+  sliver-sensitive mild yaw. This uses the full slider without the former
+  high-end safety cliff. Planner labels such as light, balanced, and full
+  describe evidence; they do not silently reduce the rendered edit.
 - Frontal and three-quarter controls use a pose-stable scale derived from the
   larger of projected face width and `0.65 ×` visible face height. Profiles stay
   on a more conservative projected-width path because hidden-side mesh vertices
@@ -79,6 +83,10 @@ drift. A direction or measurement is disabled when the current pose does not
 show the anatomy needed to estimate it reliably; for example, bilateral
 symmetry is not treated as measurable from a profile.
 
+Choosing a new local image resets the comparison preview to **After**, so the
+newly rendered result is shown immediately instead of inheriting a previous
+**Before** selection.
+
 ## Pixel-only morph pipeline
 
 1. Freeze one exact camera frame and detect its dense landmarks, optional facial
@@ -93,14 +101,23 @@ symmetry is not treated as measurable from a profile.
 6. Smooth selected targets across the fixed face topology while holding an
    expanded outer boundary ring fixed at `1.18×` the face-oval radius in x and
    `1.16×` in y.
-7. Validate each affected region against the geometry already accepted. If one
-   region exceeds the strain budget, binary-search that region's strongest safe
-   scale without shrinking unrelated regions that already passed.
-8. Treat triangle foldovers and image-bound violations as hard failures at every
+7. For a non-profile jaw, build both a continuous lower-face image-space field
+   and the conservative grouped-control field. Validate them independently;
+   near-front views prefer the continuous field, while other supported views
+   use the safe candidate with the broader P95 landmark impact. Profiles retain
+   the visible-silhouette grouped path.
+8. Validate each affected region against the geometry already accepted. Reject
+   non-finite displacement weights or target coordinates. If one region exceeds
+   the strain budget, binary-search that region's strongest safe scale without
+   shrinking unrelated regions that already passed.
+9. Treat triangle foldovers and image-bound violations as hard failures at every
    strength. Non-degenerate triangles must remain within the accepted area,
-   edge, stretch, and condition-number ranges; near-degenerate projected sliver
-   groups share a stabilized displacement instead of vetoing the entire edit.
-9. If a region has no safe non-zero scale, preserve its original geometry.
+   edge, stretch, and condition-number ranges. Continuous jaw candidates and
+   near-frontal fields stabilize projected slivers below quality `0.02` with two
+   local incident-triangle passes; they are not merged through a transitive
+   whole-group average. Conservative grouped candidates use connected handling
+   below `0.012`, including the profile path.
+10. If a region has no safe non-zero scale, preserve its original geometry.
    Replace the accepted face region once; leave texture, lighting, color, and
    every original pixel outside the fixed warp boundary unchanged.
 
@@ -157,3 +174,7 @@ npm run lint
 npm test
 npm run build:pages
 ```
+
+The suite includes a real textured-raster regression: a supported frontal plan
+must create a visible lower-face pixel change while avoiding material geometric
+resampling beyond the fixed face boundary.
