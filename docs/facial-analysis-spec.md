@@ -2,6 +2,7 @@
 
 Status: V2 implementation contract  
 Schema version: `harmonia-face-v2`  
+Planner schema version: `3.0.0-beta.1`
 Semantic proxy count: **104**  
 Measurement catalog count: **408**
 
@@ -297,6 +298,39 @@ but no single dataset is treated as a universal template; published norm sources
 can differ materially ([3D Facial Norms](https://pubmed.ncbi.nlm.nih.gov/26492185/),
 [norm-source comparison](https://pubmed.ncbi.nlm.nih.gov/31053285/)).
 
+### Active evidence registry
+
+The implemented planner has five calibrated Harmony evidence families: lower
+outline width, lower-face height, nasal width, mouth width, and brow-to-eye
+spacing. Each family declares its exact catalog IDs, pose scope, broad reference
+envelope, independent cue groups, regional contour guardrails, primitive sign,
+and maximum influence. A cue is eligible only when its measurement is valid and
+has confidence of at least `0.55`; one cue can never authorize a regional warp.
+
+For each family the planner:
+
+1. groups correlated left/right or shared-normalizer cues so they count once;
+2. takes the median within a correlated group;
+3. requires at least two independent active groups with at least two-thirds
+   directional agreement;
+4. uses median reliability and a conservative lower-quartile deviation rather
+   than the largest deviation;
+5. preserves the region when evidence is inside-band, insufficient, or in
+   conflict; and
+6. exposes every considered and valid measurement ID on the returned plan.
+
+Symmetry is a separate frontal-only family. It consumes all 40 axial and
+vertical paired residuals, applies operation-specific natural-asymmetry
+deadbands, and requires at least three independent facial roles. The Angularity
+direction is authorized by pose-valid jaw, chin, brow, or profile-silhouette
+angles, curves, and distances; those measurements authorize a restrained style
+vector but are not interpreted as an attractiveness or gender inference.
+
+The legacy `FaceAnalysis.metrics` summary remains temporarily available for UI
+compatibility and diagnostics, but `createMorphPlan` does not use it to select
+or size edits. Removing the measurement registry therefore produces a true
+no-op even if the legacy summary contains extreme values.
+
 ## 9. Morph primitives
 
 Planner primitives are small semantic proposals expressed in the pose-normalized
@@ -332,6 +366,28 @@ type PlannedEdit = {
   displacementV: number;
   supportingRuleIds: readonly string[];
   guardrailIds: readonly string[];
+};
+
+type PlannerEvidenceFamily = {
+  id: string;
+  direction: "harmony" | "symmetry" | "dimorphism";
+  region: FaceRegion;
+  primitive: MorphPrimitive;
+  signal: number;     // [-1, 1]
+  confidence: number; // [0, 1]
+  agreement: number;  // [0, 1]
+  status: "supported" | "inside-band" | "insufficient-evidence" | "evidence-conflict";
+  measurementIds: readonly string[];
+  validMeasurementIds: readonly string[];
+  maxInfluence: number;
+};
+
+type MorphPlan = {
+  schemaVersion: "3.0.0-beta.1";
+  actions: readonly PlannedEdit[];
+  evidenceFamilies: readonly PlannerEvidenceFamily[];
+  evidenceMeasurementCount: number;
+  selectedCandidate: "identity" | "light" | "balanced" | "full";
 };
 ```
 

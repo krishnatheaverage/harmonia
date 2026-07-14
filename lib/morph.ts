@@ -2,6 +2,8 @@ import type { FaceLandmarker } from "@mediapipe/tasks-vision";
 import {
   DEFAULT_DIRECTION_MIX,
   MEASUREMENT_CATALOG,
+  PLANNER_RULES,
+  PLANNER_SCHEMA_VERSION,
   SEMANTIC_LANDMARK_COUNT,
   SEMANTIC_LANDMARKS,
   analyzeFace,
@@ -11,18 +13,21 @@ import {
   type FaceAnalysis,
   type FaceObservation,
   type MorphPlan,
+  type PlannerEvidenceFamily,
   type Point,
 } from "./face-intelligence";
 
 export {
   DEFAULT_DIRECTION_MIX,
   MEASUREMENT_CATALOG,
+  PLANNER_RULES,
+  PLANNER_SCHEMA_VERSION,
   SEMANTIC_LANDMARK_COUNT,
   SEMANTIC_LANDMARKS,
   analyzeFace,
   createMorphPlan,
 };
-export type { DirectionMix, FaceAnalysis, FaceObservation, MorphPlan, Point };
+export type { DirectionMix, FaceAnalysis, FaceObservation, MorphPlan, PlannerEvidenceFamily, Point };
 type Triangle = [number, number, number];
 
 export type MorphResult = {

@@ -1,3 +1,12 @@
+import {
+  PLANNER_SCHEMA_VERSION,
+  buildPlannerEvidence,
+  type PlannerEvidenceFamily,
+} from "./planner-evidence.ts";
+
+export { PLANNER_RULES, PLANNER_SCHEMA_VERSION } from "./planner-evidence.ts";
+export type { PlannerEvidenceFamily } from "./planner-evidence.ts";
+
 /**
  * Harmonia's pose-aware analysis and planning layer.
  *
@@ -126,7 +135,10 @@ export type PlannedAction = {
 };
 
 export type MorphPlan = {
+  schemaVersion: typeof PLANNER_SCHEMA_VERSION;
   actions: PlannedAction[];
+  evidenceFamilies: PlannerEvidenceFamily[];
+  evidenceMeasurementCount: number;
   preservedRegions: string[];
   rejectedReasons: string[];
   candidateCount: number;
@@ -951,11 +963,17 @@ function evaluateMeasurements(
   );
   const editabilityMap = new Map(editability.map((entry) => [entry.region, entry.score]));
 
-  const addValue = (definition: MeasurementDefinition, value: number | null, inputConfidence: number, extraReasons: string[] = []) => {
+  const addValue = (
+    definition: MeasurementDefinition,
+    value: number | null,
+    inputConfidence: number,
+    extraReasons: string[] = [],
+    inheritedContext = false,
+  ) => {
     const poseFactor = supportConfidence(definition.poseSupport, pose);
     const sideFactor = hiddenSideFactor(definition, pose);
     const expressionFactor = expressionConfidenceForRegion(definition.region, expression);
-    const confidence = definition.kind === "context"
+    const confidence = definition.kind === "context" || inheritedContext
       ? clamp(inputConfidence)
       : clamp(inputConfidence * poseFactor * sideFactor * (0.62 + quality.overall * 0.38) * (0.68 + expressionFactor * 0.32));
     const reasons = [...extraReasons];
@@ -998,6 +1016,7 @@ function evaluateMeasurements(
       usable ? finiteOrNull((numerator?.value ?? 0) / denominatorValue) : null,
       Math.min(numerator?.confidence ?? 0, denominator?.confidence ?? 0),
       denominatorValue <= 1e-6 ? ["Normalizer was unstable"] : [],
+      true,
     );
   }
 
@@ -1180,13 +1199,6 @@ export function analyzeFace(
   };
 }
 
-function outsideBand(value: number, low: number, high: number) {
-  if (!Number.isFinite(value)) return 0;
-  if (value < low) return clamp((low - value) / Math.max(high - low, 0.001));
-  if (value > high) return -clamp((value - high) / Math.max(high - low, 0.001));
-  return 0;
-}
-
 function mixUnit(value: number) {
   return clamp(value > 1 ? value / 100 : value);
 }
@@ -1198,6 +1210,10 @@ export function createMorphPlan(analysis: FaceAnalysis, requestedMix: DirectionM
     dimorphism: mixUnit(requestedMix.dimorphism),
   };
   const rejectedReasons: string[] = [];
+  const evidenceFamilies = buildPlannerEvidence(analysis);
+  const evidenceMeasurementCount = new Set(
+    evidenceFamilies.flatMap((family) => family.validMeasurementIds),
+  ).size;
   const actionMap = new Map<MorphPrimitive, PlannedAction>();
   const editability = new Map(analysis.regionEditability.map((entry) => [entry.region, entry]));
   const poseAllowsPlan = analysis.pose.class !== "unsupported" && analysis.overallConfidence >= 0.5;
@@ -1208,12 +1224,12 @@ export function createMorphPlan(analysis: FaceAnalysis, requestedMix: DirectionM
     amount: number,
     direction: keyof DirectionMix,
     rationale: string,
-    confidenceMultiplier = 1,
+    evidenceConfidence: number,
   ) => {
     if (Math.abs(amount) < 0.012 || mix[direction] <= 0) return;
     const regionEditability = editability.get(region);
     const score = regionEditability?.score ?? 0;
-    const confidence = clamp(analysis.overallConfidence * confidenceMultiplier);
+    const confidence = Math.min(analysis.overallConfidence, clamp(evidenceConfidence));
     const expressionBlocked = analysis.expression.blockedRegions.includes(region);
     if (!poseAllowsPlan || !regionEditability?.editable || confidence < 0.5 || expressionBlocked) {
       rejectedReasons.push(`${region}: ${regionEditability?.reasons[0] ?? "confidence gate did not pass"}.`);
@@ -1224,11 +1240,19 @@ export function createMorphPlan(analysis: FaceAnalysis, requestedMix: DirectionM
     // shrinking an otherwise valid plan. The square-root direction response
     // keeps medium slider values useful while preserving exact zero and full.
     const directionResponse = Math.sqrt(mix[direction]);
-    const reliability = Math.sqrt(confidence * score);
+    const reliability = 0.85 + Math.sqrt(confidence * score) * 0.15;
     const weightedAmount = amount * directionResponse * reliability;
     const existing = actionMap.get(primitive);
     if (existing) {
-      existing.amount = clamp(existing.amount + weightedAmount, -0.9, 0.9);
+      // Same-sign directions reinforce with a bounded union instead of a raw
+      // sum. Opposing directions cancel explicitly. This lets Harmony and
+      // Angularity interact without silently doubling one primitive's budget.
+      existing.amount = Math.sign(existing.amount) === Math.sign(weightedAmount)
+        ? Math.sign(existing.amount) * (
+            1 - (1 - Math.abs(existing.amount)) * (1 - Math.abs(weightedAmount))
+          )
+        : existing.amount + weightedAmount;
+      existing.amount = clamp(existing.amount, -0.9, 0.9);
       existing.confidence = Math.min(existing.confidence, confidence);
       existing.editability = Math.min(existing.editability, score);
       existing.maxDisplacement = Math.min(existing.maxDisplacement, regionEditability?.maxDisplacement ?? existing.maxDisplacement);
@@ -1251,29 +1275,30 @@ export function createMorphPlan(analysis: FaceAnalysis, requestedMix: DirectionM
   if (!poseAllowsPlan) {
     rejectedReasons.push(analysis.pose.class === "unsupported" ? "The pose falls outside the safe V2 range." : "Analysis confidence was too low for a defensible morph.");
   } else {
-    const frontOrThreeQuarter = !analysis.pose.class.includes("profile");
-    const harmonyJaw = outsideBand(analysis.metrics.jawToFace, 0.6, 0.74);
-    const harmonyChin = outsideBand(analysis.metrics.lowerThird, 0.32, 0.42);
-    const harmonyNose = outsideBand(analysis.metrics.noseToFace, 0.23, 0.33);
-    const harmonyMouth = outsideBand(analysis.metrics.mouthToNose, 1.35, 1.95);
-    if (frontOrThreeQuarter) {
-      propose("jaw-width", "Jaw", harmonyJaw * 0.72, "harmony", "Jaw width fell outside a broad face-relative consistency band; the plan moves only toward its nearest edge.");
-      propose("nose-width", "Nose", -harmonyNose * 0.56, "harmony", "Nasal width was checked against face and intercanthal normalizers; only a partial nearest-band correction is allowed.");
-      propose("mouth-width", "Lips", harmonyMouth * 0.38, "harmony", "Mouth-to-nose balance cleared pose and expression gates, so the commissures receive a bounded adjustment.");
+    for (const family of evidenceFamilies) {
+      if (family.status !== "supported" || mix[family.direction] <= 0) continue;
+      propose(
+        family.primitive,
+        family.region,
+        family.signal * family.maxInfluence,
+        family.direction,
+        `${family.label}: ${family.rationale}`,
+        family.confidence,
+      );
     }
-    propose("chin-length", "Chin", harmonyChin * 0.58, "harmony", "Lower-face height is adjusted only when it clears the uncertainty-expanded deadband.");
 
-    if (analysis.pose.class === "frontal") {
-      const symmetrySignal = clamp((analysis.metrics.pairedDeviation - 0.28) / 1.3);
-      propose("paired-alignment", "Symmetry", symmetrySignal * 0.78, "symmetry", "Paired vertical residuals exceeded the natural-asymmetry deadband after roll normalization.", 0.96);
-    } else if (mix.symmetry > 0) {
+    if (analysis.pose.class !== "frontal" && mix.symmetry > 0) {
       rejectedReasons.push("Symmetry was disabled for this pose because perspective can imitate paired drift.");
     }
 
-    propose("jaw-width", "Jaw", 0.32, "dimorphism", "The explicit angularity direction adds a restrained lower-contour vector without inferring gender.", analysis.pose.class.includes("profile") ? 0.9 : 0.92);
-    propose("chin-length", "Chin", 0.13, "dimorphism", "A small chin-length component reinforces angular definition while preserving the existing centerline.");
-    if (!analysis.pose.class.includes("profile")) {
-      propose("brow-height", "Brows", 0.14, "dimorphism", "Brow geometry receives a small pose-valid angularity component; eye shape remains fixed.");
+    for (const family of evidenceFamilies) {
+      if (
+        family.direction === "harmony" &&
+        mix.harmony > 0 &&
+        ["insufficient-evidence", "evidence-conflict"].includes(family.status)
+      ) {
+        rejectedReasons.push(`${family.region}: ${family.rationale}`);
+      }
     }
   }
 
@@ -1297,7 +1322,10 @@ export function createMorphPlan(analysis: FaceAnalysis, requestedMix: DirectionM
     .slice(0, 8);
   if (!actions.length && !rejectedReasons.length) rejectedReasons.push("All pose-valid measurements stayed inside their uncertainty-expanded bands, so the no-op candidate won.");
   return {
+    schemaVersion: PLANNER_SCHEMA_VERSION,
     actions,
+    evidenceFamilies,
+    evidenceMeasurementCount,
     preservedRegions,
     rejectedReasons: [...new Set(rejectedReasons)],
     candidateCount: 4,

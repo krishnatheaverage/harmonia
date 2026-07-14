@@ -21,6 +21,17 @@ ratios is a universal ideal.
   MediaPipe anatomical landmarks and are not a medical annotation set.
 - An exact 408-entry measurement catalog covers facial envelope, eyes, brows,
   nose, lips, lower face, jaw, chin, paired drift, and pose/profile context.
+- The `3.0.0-beta.1` evidence planner no longer reads the legacy eight-value
+  summary to choose edits. It evaluates versioned evidence families directly
+  from the catalog; the clean frontal regression fixture currently consults 97
+  unique pose-valid distance, ratio, angle, shape, and symmetry measurements.
+- A Harmony proposal needs agreement from at least two independent normalized
+  cue groups plus regional contour checks. Median reliability, conservative
+  deviation magnitude, uncertainty bands, and conflict rejection keep one
+  extreme measurement from authorizing or amplifying an edit.
+- Frontal symmetry uses all 40 paired residuals and requires drift in at least
+  three independent facial roles. Profile plans exclude bilateral symmetry and
+  use only visible-silhouette profile evidence.
 - Every measurement declares which poses can use it, its confidence inputs, and
   whether it is a target, guardrail, context signal, or preservation signal.
 - Region editability combines pose, visibility, image quality, expression, mesh
@@ -36,6 +47,11 @@ ratios is a universal ideal.
   do not silently reduce the rendered edit.
 - Deadbands, edit budgets, compatibility checks, and geometry validation allow
   the planner to return a conservative no-op when an edit is not well supported.
+
+The 408-entry catalog contains 210 declared ratios; it is not 408 independent
+beauty rules. Only calibrated, pose-valid evidence families can create edit
+pressure today. The remaining measurements provide confidence, preservation,
+and geometry context while additional families are validated.
 
 The detailed contract, including primitives, schemas, pose validity, confidence,
 editability, planner rules, and limitations, is in
@@ -101,6 +117,16 @@ example of standardized landmark and measurement collection, while a direct
 [comparison of facial norm sources](https://pubmed.ncbi.nlm.nih.gov/31053285/)
 found material differences between datasets. Harmonia therefore uses broad
 deadbands and self-relative consistency instead of a single population mean.
+
+No attractive-face database, attractiveness classifier, or learned personalized
+planner is bundled in this release. Public research sets can inform later,
+consented calibration, but their labels and populations are not universal. The
+[Chicago Face Database](https://www.chicagofaces.org/) publishes standardized
+face measurements and U.S. norming ratings, while
+[SCUT-FBP5500](https://arxiv.org/abs/1801.06345) provides 5,500 rated frontal
+portraits. Cross-cultural studies also report meaningful assessor and subject
+group effects ([PLOS ONE](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0245998)),
+so neither is treated as ground truth for an individual face.
 
 ## Run locally
 

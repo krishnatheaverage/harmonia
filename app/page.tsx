@@ -742,6 +742,8 @@ export default function Home() {
   const editability = editabilityReadouts(analysis);
   const planActions = planActionReadouts(plan);
   const planConfidence = plannerConfidence(plan);
+  const supportedEvidenceFamilies = plan?.evidenceFamilies.filter((family) => family.status === "supported").length ?? 0;
+  const evidenceMeasurementCount = plan?.evidenceMeasurementCount ?? 0;
   const preserved = preservedRegions(plan);
   const rejected = rejectedReasons(plan);
   const hasPlannedEdit = planActions.length > 0;
@@ -951,6 +953,11 @@ export default function Home() {
               </div>
 
               <div className="analysis-subheading plan-heading"><strong>Selected plan</strong><small>{activeDirectionLabels.join(" + ") || "No direction active"}</small></div>
+              <div className="plan-evidence" aria-label={`${evidenceMeasurementCount} pose-valid evidence inputs across ${supportedEvidenceFamilies} supported families`}>
+                <span><b>{evidenceMeasurementCount}</b><small>evidence inputs</small></span>
+                <span><b>{supportedEvidenceFamilies}</b><small>supported families</small></span>
+                <span><b>V3</b><small>robust planner</small></span>
+              </div>
               <div className="plan-list">
                 {planActions.length ? planActions.map((action, index) => (
                   <article key={`${action.region}-${index}`}>
